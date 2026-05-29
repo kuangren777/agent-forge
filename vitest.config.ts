@@ -7,5 +7,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/setupTests.ts'],
+    // AYA worktrees live inside the project dir; never glob their test copies
+    exclude: ['**/node_modules/**', '**/dist/**', '.aya-worktrees/**'],
   },
 });
