@@ -1,0 +1,6 @@
+node_modules/
+.aya-worktrees/
+dist/
+.aya
+*.log
+temp/

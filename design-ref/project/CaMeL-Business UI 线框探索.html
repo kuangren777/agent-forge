@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CaMeL-Business · 前端 UI 线框探索</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+SC:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Gochi+Hand&family=Architects+Daughter&display=swap" rel="stylesheet" />
+<link href="wireframe.css" rel="stylesheet" />
+<style>
+  html, body { margin: 0; height: 100%; background: #f0eee9; }
+  #root { height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="wireframe-kit.jsx"></script>
+<script type="text/babel" src="screen-explore.jsx"></script>
+<script type="text/babel" src="screen-live.jsx"></script>
+<script type="text/babel" src="screen-chat.jsx"></script>
+<script type="text/babel" src="screen-flow.jsx"></script>
+<script type="text/babel" src="screen-ops.jsx"></script>
+<script type="text/babel" src="screen-audit.jsx"></script>
+
+<script type="text/babel">
+const { useState } = React;
+
+const DIRS = [
+  ["A", "工作台 Workbench", "IDE 式 · 多面板密集 · power admin"],
+  ["B", "对话优先 Conversational", "chat 为主角 · 轻盈留白 · 员工/客户"],
+  ["C", "控制台 Console", "顶栏+导航 · 卡片/表格 · 均衡"],
+  ["D", "安全视角 Security / Graph", "图与数据流 · trace 驱动 · 审计/安全"],
+];
+
+const SCREENS = [
+  { id: "explore", title: "① 探索配置 Explore", subtitle: "挂载数据源 · 触发自主探索 · 5 个可插拔 Explorer", c: ["ExploreA", "ExploreB", "ExploreC", "ExploreD"] },
+  { id: "live", title: "② 实时探索 Live", subtitle: "四阶段进度 · 当前文件 · 提取知识 · 操作计数", c: ["LiveA", "LiveB", "LiveC", "LiveD"] },
+  { id: "chat", title: "③ 对话界面 Chat", subtitle: "自然语言 → 执行计划 → 写操作确认", c: ["ChatA", "ChatB", "ChatC", "ChatD"] },
+  { id: "flow", title: "④ 数据流可视化 Dataflow", subtitle: "能力标签传播 · 节点=变量/操作 · 边=依赖", c: ["FlowA", "FlowB", "FlowC", "FlowD"] },
+  { id: "ops", title: "⑤ 操作管理 Registry", subtitle: "审核操作 · 权限/确认级别 · 可插拔 Policy+Executor", c: ["OpsA", "OpsB", "OpsC", "OpsD"] },
+  { id: "audit", title: "⑥ 审计查看器 Audit", subtitle: "hash 链时间线 · 完整性验证 · 回滚 · 可插拔 Sink", c: ["AuditA", "AuditB", "AuditC", "AuditD"] },
+];
+
+const W = 1180, H = 768;
+
+function App() {
+  return (
+    <DesignCanvas>
+      <DCSection id="intro" title="CaMeL-Business · 前端 UI 探索" subtitle="4 个方向 × 6 个界面 · 中保真线框 · 读列=同一界面的方案，读行=一套完整产品概念">
+        <DCPostIt>
+          <div style={{ fontFamily: "var(--sans)", fontSize: 12.5, lineHeight: 1.7 }}>
+            <b>4 个方向（每个界面都有）</b><br />
+            <b>A 工作台</b> — IDE 式多面板，密集技术向<br />
+            <b>B 对话优先</b> — chat 为主角，轻盈留白<br />
+            <b>C 控制台</b> — 顶栏导航 + 卡片表格<br />
+            <b>D 安全视角</b> — 图 / 数据流 / trace 驱动<br />
+            <span style={{ color: "#9c4a2e" }}>🟢可信 🔵内部 🟡解析 🟠写操作</span><br />
+            高扩展性贯穿：5 类插件入口（Explorer / Executor / Policy / Sink / LLM）
+          </div>
+        </DCPostIt>
+      </DCSection>
+
+      {SCREENS.map(s => (
+        <DCSection key={s.id} id={s.id} title={s.title} subtitle={s.subtitle}>
+          {s.c.map((name, i) => {
+            const Comp = window[name];
+            const [code, label, desc] = DIRS[i];
+            return (
+              <DCArtboard key={name} id={s.id + "-" + code} label={`${code} · ${label}`} width={W} height={H}>
+                <Comp />
+              </DCArtboard>
+            );
+          })}
+        </DCSection>
+      ))}
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
