@@ -4,3 +4,13 @@ dist/
 .aya
 *.log
 temp/
+
+# python backend
+server/.venv/
+server/.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+server/pgdata/
+.env.local

@@ -1,0 +1,28 @@
+services:
+  db:
+    image: registry.kr777.top/postgres:16
+    container_name: agentforge-db
+    environment:
+      POSTGRES_USER: agentforge
+      POSTGRES_PASSWORD: agentforge
+      POSTGRES_DB: agentforge
+    ports:
+      - "5544:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: registry.kr777.top/redis:7-alpine
+    container_name: agentforge-redis
+    ports:
+      - "6390:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
