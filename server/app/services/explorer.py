@@ -14,13 +14,13 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 
-from app.config import settings
 from app.db import SessionLocal
 from app.models.registry import Operation, OperationPermission
 from app.models.sources import (
     DataSource, DiscoveredOperation, ExplorationEvent, ExplorationJob,
 )
 from app.services.llm import llm
+from app.services.llm_config import resolve as resolve_profile
 
 EXTRACT_SYSTEM = """\
 You explore an enterprise data source and propose callable operations an AI agent
@@ -63,11 +63,12 @@ async def run_exploration(job_id: uuid.UUID) -> None:
 
         # ---- real extraction via LLM (any failure must not leave job 'running') ----
         try:
+            prof = await resolve_profile(db, source.tenant_id, "pllm")
             data, _ = await llm.structured(
-                settings.pllm_model, EXTRACT_SYSTEM,
+                prof.model, EXTRACT_SYSTEM,
                 f"Source type: {source.type}\nConnector: {source.connector_kind}\n"
                 f"Connection: {source.conn}\nName: {source.name}",
-                max_tokens=900,
+                temperature=prof.temperature, max_tokens=900,
             )
         except Exception as exc:  # noqa: BLE001 — surface any error to the job
             await _emit(db, job_id, "error", {"error": f"{type(exc).__name__}: {exc}"})

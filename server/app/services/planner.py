@@ -12,9 +12,9 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.models.audit import LLMRun
 from app.services.llm import llm
+from app.services.llm_config import resolve as resolve_profile
 
 _VALID_KINDS = {"query", "parse", "write"}
 _VALID_CAPS = {"trusted", "data", "parsed", "write"}
@@ -51,6 +51,7 @@ async def plan(
     db: AsyncSession,
     trace_id: uuid.UUID,
     *,
+    tenant_id: uuid.UUID,
     role: str,
     instruction: str,
     operations: list[dict],
@@ -66,7 +67,9 @@ async def plan(
         f"User instruction:\n{instruction}"
     )
 
-    draft, result = await llm.structured(settings.pllm_model, SYSTEM, user, max_tokens=1600)
+    prof = await resolve_profile(db, tenant_id, "pllm")
+    draft, result = await llm.structured(prof.model, SYSTEM, user,
+                                         temperature=prof.temperature, max_tokens=prof.max_tokens)
     draft = _normalise(draft)
 
     run = LLMRun(

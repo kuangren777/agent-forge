@@ -82,7 +82,8 @@ async def create_plan(
 
     ops = await _available_operations(db, tenant_id, identity.role)
     op_by_key = {o["op_key"]: o for o in ops}
-    draft = await planner.plan(db, trace.id, role=identity.role, instruction=instruction, operations=ops)
+    draft = await planner.plan(db, trace.id, tenant_id=tenant_id, role=identity.role,
+                               instruction=instruction, operations=ops)
 
     await audit.append_event(db, trace.id, "PLAN_GENERATED",
                              {"intent": draft["intent"], "steps": len(draft["steps"]),
@@ -266,7 +267,8 @@ async def _execute_plan(db: AsyncSession, plan: ExecutionPlan, trace: Trace, ste
 
         elif st.kind == "parse":
             # Q-LLM is actually invoked here, on quarantined data only
-            parsed = await qparser.parse(db, plan.trace_id, instruction=st.label, data_slice=rows)
+            parsed = await qparser.parse(db, plan.trace_id, tenant_id=trace.tenant_id,
+                                          instruction=st.label, data_slice=rows)
             ids = parsed.get("selected_ids") or []
             if not ids:  # fallback: derive pending refunds from the fetched rows
                 ids = [r.get("key") for r in rows if r.get("refund_status") == "pending"]

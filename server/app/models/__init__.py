@@ -16,6 +16,7 @@ from app.models.registry import (
     Plugin,
     PluginRegistration,
 )
+from app.models.llmconfig import LLMProfile
 from app.models.business import BizRecord
 from app.models.chat import ChatMessage, ChatSession, ExecutionPlan, PlanStep
 from app.models.execution import ApprovalRequest, ApprovalVote, Execution
@@ -32,7 +33,7 @@ __all__ = [
     "Tenant", "User", "Role", "UserRole", "Session",
     "DataSource", "ExplorationJob", "ExplorationEvent",
     "DiscoveredEntity", "DiscoveredOperation", "DiscoveredRule", "DiscoveredChain",
-    "Operation", "OperationPermission", "Plugin", "PluginRegistration",
+    "Operation", "OperationPermission", "Plugin", "PluginRegistration", "LLMProfile",
     "BizRecord",
     "ChatSession", "ChatMessage", "ExecutionPlan", "PlanStep",
     "ApprovalRequest", "ApprovalVote", "Execution",

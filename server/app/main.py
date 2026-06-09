@@ -71,7 +71,7 @@ def _include_routers() -> None:
     for modname, attr in [
         ("identity", "router"), ("sources", "router"), ("registry", "router"),
         ("approvals", "router"), ("chat", "router"), ("traces", "router"),
-        ("executions", "router"), ("plugins", "router"),
+        ("executions", "router"), ("plugins", "router"), ("llm_profiles", "router"),
     ]:
         try:
             mod = __import__(f"app.api.{modname}", fromlist=[attr])

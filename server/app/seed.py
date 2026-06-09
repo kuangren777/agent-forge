@@ -22,9 +22,10 @@ from app.models import (
     ApprovalRequest, ApprovalVote, AuditEvent, BizRecord, ChatMessage, ChatSession,
     DataSource, DataflowEdge, DataflowNode, DiscoveredChain, DiscoveredEntity,
     DiscoveredOperation, DiscoveredRule, Execution, ExecutionPlan, ExplorationEvent,
-    ExplorationJob, LLMRun, Operation, OperationPermission, Plugin, PluginRegistration,
-    PlanStep, Role, Session, Tenant, Trace, User, UserRole,
+    ExplorationJob, LLMProfile, LLMRun, Operation, OperationPermission, Plugin,
+    PluginRegistration, PlanStep, Role, Session, Tenant, Trace, User, UserRole,
 )
+from app.config import settings
 from app.services import audit
 
 TENANT_SLUG = "demo"
@@ -97,7 +98,7 @@ async def run() -> None:
                       ExecutionPlan, LLMRun, ApprovalVote, ApprovalRequest, ChatSession, Trace,
                       BizRecord, PluginRegistration, Plugin, OperationPermission, Operation,
                       ExplorationEvent, DiscoveredOperation, DiscoveredEntity, DiscoveredRule,
-                      DiscoveredChain, ExplorationJob, DataSource):
+                      DiscoveredChain, ExplorationJob, DataSource, LLMProfile):
             await db.execute(delete(model))
         await db.execute(delete(Session))
         await db.execute(delete(UserRole))
@@ -141,6 +142,12 @@ async def run() -> None:
                     operation_id=op.id, subject_type="role", subject_id=role_key,
                     effect="allow", condition_json={"scope": scope} if scope else {},
                 ))
+
+        # ---- LLM profiles (per-tenant model config; switchable at runtime) ----
+        db.add(LLMProfile(tenant_id=tid, role="pllm", model=settings.pllm_model,
+                          temperature=0.1, max_tokens=1600, timeout_s=90))
+        db.add(LLMProfile(tenant_id=tid, role="qllm", model=settings.qllm_model,
+                          temperature=0.1, max_tokens=900, timeout_s=90))
 
         # ---- data sources ----
         for typ, name, kind, conn, status in DATA_SOURCES:

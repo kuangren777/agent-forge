@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.models.audit import LLMRun
 from app.services.llm import llm
+from app.services.llm_config import resolve as resolve_profile
 
 SYSTEM = """\
 You are the Q-LLM (quarantined parser). You are given a DATA SLICE and a parsing
@@ -31,11 +31,14 @@ async def parse(
     db: AsyncSession,
     trace_id: uuid.UUID,
     *,
+    tenant_id: uuid.UUID,
     instruction: str,
     data_slice: list | dict,
 ) -> dict:
+    prof = await resolve_profile(db, tenant_id, "qllm")
     user = f"INSTRUCTION:\n{instruction}\n\nDATA SLICE (untrusted):\n{data_slice}"
-    out, result = await llm.structured(settings.qllm_model, SYSTEM, user, max_tokens=900)
+    out, result = await llm.structured(prof.model, SYSTEM, user,
+                                       temperature=prof.temperature, max_tokens=prof.max_tokens)
 
     parsed = {
         "result": out.get("result"),
