@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Tag, Dot, Btn, Icon } from '../components/kit';
 import { useApp } from '../lib/appContext';
+import { useMe } from '../features/auth';
 import { useTraces, useTraceAudit, useExecutions, useRollback } from '../features/traces';
 
 function useActiveTrace() {
@@ -54,6 +55,8 @@ export function AuditMain() {
 
 export function AuditAside() {
   const { traceSel, toast } = useApp();
+  const role = useMe().data?.acting_role ?? 'admin';
+  const canRollback = role === 'employee' || role === 'admin';
   const { data } = useExecutions(traceSel ?? undefined);
   const rollback = useRollback(traceSel ?? undefined);
   const ex = data?.items.find((e) => e.status === 'ok') ?? data?.items[0];
@@ -73,7 +76,7 @@ export function AuditAside() {
             <div className="row between sm"><span className="muted">executor</span><span className="mono muted2">{ex.executor}</span></div>
             <div className="row between sm"><span className="muted">耗时</span><span className="mono muted2">{ex.latency_ms}ms</span></div>
             <div className="row between sm"><span className="muted">状态</span><span className="mono muted2">{ex.status}</span></div>
-            {ex.status !== 'rolled_back' && (
+            {canRollback && ex.status !== 'rolled_back' && (
               <Btn sz="sm" k="warn" ic="refresh" style={{ marginTop: 4 }} disabled={rollback.isPending}
                 onClick={() => rollback.mutate(ex.id, {
                   onSuccess: () => toast('已回滚 · 已记录补偿事件', 'warn'),

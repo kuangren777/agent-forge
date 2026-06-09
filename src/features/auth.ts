@@ -20,6 +20,13 @@ export async function login(role: Role): Promise<void> {
   await queryClient.invalidateQueries();
 }
 
+/** Production auth: email + password. */
+export async function passwordLogin(email: string, password: string): Promise<void> {
+  const res = await api.post<{ token: string }>('/auth/token', { email, password });
+  setToken(res.token);
+  await queryClient.invalidateQueries();
+}
+
 export function useLogin() {
   return useMutation({ mutationFn: (role: Role) => login(role) });
 }

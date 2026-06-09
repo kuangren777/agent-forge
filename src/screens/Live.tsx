@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Icon, Tag, Dot, Note, Btn } from '../components/kit';
 import { useApp } from '../lib/appContext';
 import { useMe } from '../features/auth';
@@ -15,8 +16,18 @@ export function LiveMain() {
   const job = useJob(jobId);
   const events = useExplorationStream(jobId);
   const logRef = useRef<HTMLDivElement>(null);
+  const qc = useQueryClient();
 
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [events]);
+
+  // when exploration finishes, newly-discovered operations/sources are ready → refresh
+  useEffect(() => {
+    if (events.some((e) => e.type === 'done')) {
+      qc.invalidateQueries({ queryKey: ['operations'] });
+      qc.invalidateQueries({ queryKey: ['sources'] });
+      if (jobId) qc.invalidateQueries({ queryKey: ['job', jobId] });
+    }
+  }, [events, qc, jobId]);
 
   const src = sources.data?.items[0];
   const phase = job.data?.phase ?? 0;

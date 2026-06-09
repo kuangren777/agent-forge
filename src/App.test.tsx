@@ -16,10 +16,12 @@ function renderApp() {
 describe('App auth gate', () => {
   beforeEach(() => localStorage.clear());
 
-  it('shows the login screen with role choices when unauthenticated', () => {
+  it('shows the login screen with password form and role choices when unauthenticated', () => {
     renderApp();
-    expect(screen.getByText(/以「管理员」登录/)).toBeInTheDocument();
-    expect(screen.getByText(/以「员工」登录/)).toBeInTheDocument();
-    expect(screen.getByText(/以「客户」登录/)).toBeInTheDocument();
+    expect(screen.getByLabelText('邮箱')).toBeInTheDocument();
+    expect(screen.getByLabelText('密码')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '管理员' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '员工' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '客户' })).toBeInTheDocument();
   });
 });

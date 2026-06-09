@@ -48,7 +48,7 @@ export function FlowMain() {
 
 export function FlowAside() {
   const { flowSel } = useApp();
-  const traceId = useApp().traceSel;
+  const traceId = useActiveTrace();
   const { data } = useTraceFlow(traceId ?? undefined);
   const n = data?.nodes[flowSel] ?? data?.nodes[0];
 

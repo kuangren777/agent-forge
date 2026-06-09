@@ -23,6 +23,8 @@ interface AppCtxShape {
   setTraceSel: (id: string | null) => void;
   flowSel: number;
   setFlowSel: (i: number) => void;
+  chatSession: string | null;
+  setChatSession: (id: string | null) => void;
 
   toasts: Toast[];
   toast: (text: string, kind?: Toast['kind']) => void;
@@ -42,6 +44,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [plugSel, setPlugSel] = useState<string | null>(null);
   const [traceSel, setTraceSel] = useState<string | null>(null);
   const [flowSel, setFlowSel] = useState<number>(0);
+  const [chatSession, setChatSession] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
 
@@ -61,6 +64,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     <AppCtx.Provider value={{
       active, setActive, treeSel, setTreeSel, query, setQuery,
       opsSel, setOpsSel, plugSel, setPlugSel, traceSel, setTraceSel, flowSel, setFlowSel,
+      chatSession, setChatSession,
       toasts, toast,
     }}>
       {children}

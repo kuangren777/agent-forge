@@ -35,21 +35,22 @@ function PlanCard({ plan }: { plan: Plan }) {
 }
 
 export function ChatMain() {
-  const { setTraceSel, toast } = useApp();
+  const { setTraceSel, toast, chatSession, setChatSession } = useApp();
   const qc = useQueryClient();
   const sessions = useSessions();
   const ensure = useEnsureSession();
-  const [sessionId, setSessionId] = useState<string | undefined>();
+  const sessionId = chatSession ?? undefined;
+  const setSessionId = (id: string) => setChatSession(id);
   const [draft, setDraft] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
 
-  // pick or create a session
+  // pick or create a session (shared via context so the aside sees the same one)
   useEffect(() => {
     if (sessionId || sessions.isLoading) return;
     const first = sessions.data?.items[0];
     if (first) setSessionId(first.id);
     else if (!ensure.isPending) ensure.mutate(undefined, { onSuccess: (s) => setSessionId(s.id) });
-  }, [sessions.data, sessions.isLoading, sessionId, ensure]);
+  }, [sessions.data, sessions.isLoading, sessionId, ensure, setChatSession]);
 
   const messages = useMessages(sessionId);
   const send = useSendMessage(sessionId);
@@ -68,7 +69,7 @@ export function ChatMain() {
 
   function doSend() {
     const text = draft.trim();
-    if (!text || send.isPending) return;
+    if (!text || !sessionId || send.isPending) return;
     setDraft('');
     send.mutate(text, { onError: (e) => toast(`发送失败：${(e as Error).message}`, 'warn') });
   }
@@ -127,10 +128,8 @@ export function ChatMain() {
 }
 
 export function ChatAside() {
-  const sessions = useSessions();
-  const [sid, setSid] = useState<string | undefined>();
-  useEffect(() => { if (!sid) setSid(sessions.data?.items[0]?.id); }, [sessions.data, sid]);
-  const messages = useMessages(sid);
+  const { chatSession } = useApp();
+  const messages = useMessages(chatSession ?? undefined);
 
   const latestPlan = (() => {
     const items = messages.data?.items ?? [];
