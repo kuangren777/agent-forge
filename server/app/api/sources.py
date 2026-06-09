@@ -14,7 +14,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.db import SessionLocal, get_db
 from app.deps import Principal, get_principal, get_principal_qs
 from app.models.sources import DataSource, ExplorationEvent, ExplorationJob
-from app.services.explorer import run_exploration
+from app.queue import get_pool
 
 router = APIRouter(tags=["sources"])
 
@@ -40,14 +40,21 @@ async def start_explore(
     if src is None or src.tenant_id != p.tenant_id:
         raise HTTPException(status_code=404, detail="source not found")
     job = ExplorationJob(source_id=src.id, tenant_id=p.tenant_id, trigger_type="manual",
-                         status="running", phase=1, progress=0,
+                         status="queued", phase=0, progress=0,
                          started_at=datetime.now(timezone.utc))
     db.add(job)
     src.status = "running"
     await db.commit()
-    # fire-and-forget background exploration (own DB session inside)
-    asyncio.create_task(run_exploration(job.id))
-    return {"job_id": str(job.id), "status": "running"}
+    # durable enqueue → handled by the arq worker (survives API restarts)
+    try:
+        pool = await get_pool()
+        await pool.enqueue_job("explore_task", str(job.id))
+    except Exception as exc:  # redis/worker unavailable → don't leave a phantom job
+        job.status = "error"
+        src.status = "error"
+        await db.commit()
+        raise HTTPException(status_code=503, detail=f"job queue unavailable: {exc}") from exc
+    return {"job_id": str(job.id), "status": "queued"}
 
 
 @router.get("/exploration-jobs/{job_id}")

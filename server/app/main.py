@@ -24,6 +24,8 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("refusing to start: insecure production configuration — " + "; ".join(problems))
     log.info("agent-forge starting env=%s demo_login=%s", settings.app_env, settings.demo_login_enabled)
     yield
+    from app.queue import close_pool
+    await close_pool()
     log.info("agent-forge shutting down")
 
 

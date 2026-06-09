@@ -41,6 +41,17 @@ services:
     # exposed only to the web container; publish 127.0.0.1:8099 if probing locally
     expose: ["8099"]
 
+  worker:
+    build: ./server
+    restart: unless-stopped
+    env_file: [deploy/env/server.env]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+    volumes:
+      - apilogs:/var/log/agent-forge
+    command: ["arq", "app.worker.WorkerSettings"]
+
   web:
     build:
       context: .

@@ -1,0 +1,30 @@
+[Unit]
+Description=agent-forge background worker (arq)
+After=network-online.target redis-server.service postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=agentforge
+Group=agentforge
+WorkingDirectory=/opt/agent-forge/server
+EnvironmentFile=/etc/agent-forge/server.env
+ExecStart=/opt/agent-forge/server/.venv/bin/arq app.worker.WorkerSettings
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agent-forge-worker
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/log/agent-forge
+
+[Install]
+WantedBy=multi-user.target
