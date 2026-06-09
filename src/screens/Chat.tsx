@@ -1,128 +1,123 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../lib/appContext';
-import { CHAT, PLLLM_CODE } from '../lib/data';
 import { Btn, Dot, Icon, Note, Tag } from '../components/kit';
-import type { ChatPlan } from '../lib/types';
+import {
+  useSessions, useEnsureSession, useMessages, useSendMessage, useConfirmPlan, useCancelPlan,
+} from '../features/chat';
+import { useQueryClient } from '@tanstack/react-query';
+import type { Plan } from '../api/types';
 
-interface Msg { who: 'u' | 'a'; text: string; }
+const capDot = (c: string) => (c === 'query' ? 'data' : c === 'parse' ? 'parsed' : 'write');
 
-/* ---- PlanCard ---- */
-function PlanCard({ c }: { c: ChatPlan }) {
+function PlanCard({ plan }: { plan: Plan }) {
   return (
     <div className="card pad12 col gap8">
       <div className="row between vcenter">
-        <span className="eyebrow">执行计划 · execution plan</span>
-        <Tag k="m">{c.writes} 写操作</Tag>
+        <span className="eyebrow">执行计划 · {plan.required_confirm_level}</span>
+        <Tag k="m">{plan.writes} 写操作</Tag>
       </div>
-      {c.plan.map(([n, t, k], i) => (
-        <div key={i} className="row vcenter gap8" style={{ fontSize: 12 }}>
-          <span className="mono muted xs" style={{ width: 14 }}>{n}</span>
-          <Dot k={k === 'q' ? 'data' : k === 'p' ? 'parsed' : 'write'} />
-          <span className="fill muted2">{t}</span>
-          {k === 'm' && <Tag k="write">mutation</Tag>}
+      {plan.steps.map((s) => (
+        <div key={s.step_no} className="row vcenter gap8" style={{ fontSize: 12 }}>
+          <span className="mono muted xs" style={{ width: 14 }}>{s.step_no}</span>
+          <Dot k={capDot(s.kind)} />
+          <span className="fill muted2">{s.label}</span>
+          {s.kind === 'write' && <Tag k="write">mutation</Tag>}
         </div>
       ))}
-      <div className="divln" />
-      <div className="row vcenter gap6 xs muted">
-        <Icon n="bolt" s={12} c="var(--cap-write)" />
-        {c.foot}
-      </div>
+      {plan.reasoning_summary && (
+        <>
+          <div className="divln" />
+          <span className="xs muted">{plan.reasoning_summary}</span>
+        </>
+      )}
     </div>
   );
 }
 
-/* ---- ChatMain ---- */
 export function ChatMain() {
-  const { role, toast } = useApp();
-  const c = CHAT[role] ?? CHAT.employee;
-  const [done, setDone] = useState(false);
-  const [extra, setExtra] = useState<Msg[]>([]);
+  const { setTraceSel, toast } = useApp();
+  const qc = useQueryClient();
+  const sessions = useSessions();
+  const ensure = useEnsureSession();
+  const [sessionId, setSessionId] = useState<string | undefined>();
   const [draft, setDraft] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { setDone(false); setExtra([]); }, [role]);
-  useEffect(() => { endRef.current?.scrollIntoView?.({ behavior: 'smooth' }); }, [extra, done]);
+  // pick or create a session
+  useEffect(() => {
+    if (sessionId || sessions.isLoading) return;
+    const first = sessions.data?.items[0];
+    if (first) setSessionId(first.id);
+    else if (!ensure.isPending) ensure.mutate(undefined, { onSuccess: (s) => setSessionId(s.id) });
+  }, [sessions.data, sessions.isLoading, sessionId, ensure]);
 
-  function send() {
+  const messages = useMessages(sessionId);
+  const send = useSendMessage(sessionId);
+  const confirm = useConfirmPlan(sessionId);
+  const cancel = useCancelPlan(sessionId);
+
+  useEffect(() => { endRef.current?.scrollIntoView?.({ behavior: 'smooth' }); }, [messages.data, send.isPending]);
+
+  // surface the latest plan's trace to Flow/Audit
+  useEffect(() => {
+    const items = messages.data?.items ?? [];
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (items[i].plan) { setTraceSel(items[i].plan!.trace_id); break; }
+    }
+  }, [messages.data, setTraceSel]);
+
+  function doSend() {
     const text = draft.trim();
-    if (!text) return;
+    if (!text || send.isPending) return;
     setDraft('');
-    setExtra(prev => [...prev, { who: 'u', text }]);
-    setTimeout(() => {
-      setExtra(prev => [...prev, {
-        who: 'a',
-        text: 'P-LLM 已把这条指令编译成新计划草稿，读操作自动执行，写操作会先弹确认。（演示）',
-      }]);
-    }, 450);
+    send.mutate(text, { onError: (e) => toast(`发送失败：${(e as Error).message}`, 'warn') });
   }
+
+  const items = messages.data?.items ?? [];
 
   return (
     <div className="col fill" style={{ minHeight: 0 }}>
-      {/* conversation */}
       <div className="col gap12 fill scroll" style={{ padding: '16px 18px' }}>
-        {role === 'customer' && (
-          <div className="row vcenter gap6" style={{ alignSelf: 'flex-start' }}>
-            <Tag k="trusted">客户通道</Tag>
-            <span className="xs muted">仅限你自己的数据</span>
+        {messages.isLoading && <span className="muted sm">加载会话…</span>}
+        {items.length === 0 && !messages.isLoading && (
+          <div className="col center fill gap8 muted sm">
+            <Icon n="chat" s={28} c="var(--ink-4)" />
+            用自然语言下达指令，P-LLM 会生成可审计的执行计划。
           </div>
         )}
-
-        <div className="msg u">{c.q}</div>
-
-        <div className="col gap8" style={{ maxWidth: '82%' }}>
-          <div className="msg a" style={{ maxWidth: '100%' }}>
-            {done ? c.done : `我将执行以下操作，涉及 ${c.writes} 个写操作，需要你确认：`}
+        {items.map((m) => (
+          <div key={m.id} className="col gap8" style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '82%' }}>
+            <div className={`msg ${m.role === 'user' ? 'u' : 'a'}`} style={{ maxWidth: '100%' }}>{m.content}</div>
+            {m.plan && <PlanCard plan={m.plan} />}
+            {m.plan && m.plan.status === 'awaiting_confirm' && (
+              <div className="row gap8">
+                <Btn k="go" ic="check" disabled={confirm.isPending}
+                  onClick={() => confirm.mutate(m.plan!.id, {
+                    onSuccess: (p) => toast(p.blocked ? '仍需更多审批' : '已执行并写入审计链', p.blocked ? 'warn' : 'ok'),
+                  })}>确认执行</Btn>
+                <Btn k="ghost" disabled={cancel.isPending}
+                  onClick={() => cancel.mutate(m.plan!.id, { onSuccess: () => toast('已取消', 'warn') })}>取消</Btn>
+              </div>
+            )}
+            {m.plan && m.plan.status === 'done' && (
+              <div className="row vcenter gap8 sm" style={{ color: 'var(--cap-trusted)' }}>
+                <Icon n="check" s={15} c="var(--cap-trusted)" />已执行 · 已写入审计链
+                <button className="btn ghost sm" onClick={() => { setTraceSel(m.plan!.trace_id); qc.invalidateQueries({ queryKey: ['traces'] }); toast('已在审计/数据流中定位该 trace', 'info'); }}>查看审计</button>
+              </div>
+            )}
           </div>
-
-          {c.note && !done && (
-            <div className="row vcenter gap6 xs" style={{ color: 'var(--cap-data)' }}>
-              <Icon n="lock" s={12} c="var(--cap-data)" />
-              {c.note}
-            </div>
-          )}
-
-          <PlanCard c={c} />
-
-          {done ? (
-            <div className="row vcenter gap8 sm" style={{ color: 'var(--cap-trusted)' }}>
-              <Icon n="check" s={15} c="var(--cap-trusted)" />
-              已确认并执行 · 142ms ·{' '}
-              <span className="muted">DATAFLOW_SNAPSHOT 已写入审计链</span>
-            </div>
-          ) : (
-            <div className="row gap8">
-              <Btn k="go" ic="check" onClick={() => { setDone(true); toast('操作已执行，已写入审计链'); }}>确认执行</Btn>
-              <Btn ic="code" onClick={() => toast('打开计划编辑器（演示）', 'info')}>修改</Btn>
-              <Btn k="ghost" onClick={() => toast('已取消', 'warn')}>取消</Btn>
-            </div>
-          )}
-        </div>
-
-        {/* user-appended messages */}
-        {extra.map((m, i) => (
-          <div key={i} className={`msg ${m.who}`}>{m.text}</div>
         ))}
         <div ref={endRef} />
       </div>
 
-      {/* input */}
       <div style={{ padding: '12px 18px', borderTop: '1px solid var(--line)', background: 'var(--paper)', flexShrink: 0 }}>
         <label className="field lg">
           <Icon n="chat" s={15} c="var(--ink-4)" />
-          <input
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') send(); }}
-            placeholder="继续输入指令…"
-            aria-label="对话输入"
-          />
-          <button
-            className="btn pri sm"
-            onClick={send}
-            disabled={!draft.trim()}
-            aria-label="发送"
-            style={{ height: 28 }}
-          >
+          <input value={draft} onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') doSend(); }}
+            placeholder={send.isPending ? 'P-LLM 规划中…' : '继续输入指令…'} aria-label="对话输入" disabled={send.isPending} />
+          <button className="btn pri sm" onClick={doSend} disabled={!draft.trim() || send.isPending}
+            aria-label="发送" style={{ height: 28 }}>
             <Icon n="bolt" s={13} c="#fff" /> 发送
           </button>
         </label>
@@ -131,32 +126,50 @@ export function ChatMain() {
   );
 }
 
-/* ---- ChatAside ---- */
 export function ChatAside() {
-  const { role } = useApp();
-  const segments = PLLLM_CODE[role] ?? PLLLM_CODE.employee;
+  const sessions = useSessions();
+  const [sid, setSid] = useState<string | undefined>();
+  useEffect(() => { if (!sid) setSid(sessions.data?.items[0]?.id); }, [sessions.data, sid]);
+  const messages = useMessages(sid);
+
+  const latestPlan = (() => {
+    const items = messages.data?.items ?? [];
+    for (let i = items.length - 1; i >= 0; i--) if (items[i].plan) return items[i].plan!;
+    return null;
+  })();
 
   return (
     <div className="col fill">
       <div className="pad14 row between vcenter" style={{ borderBottom: '1px solid var(--line-2)' }}>
-        <span className="h3">P-LLM 生成的代码</span>
+        <span className="h3">P-LLM 计划详情</span>
         <Tag k="q">只读</Tag>
       </div>
-
-      <div className="pad12 fill">
-        <div className="code fill">
-          {segments.map((seg, i) =>
-            seg.cls ? <span key={i} className={seg.cls}>{seg.text}</span> : <span key={i}>{seg.text}</span>
-          )}
-        </div>
-      </div>
-
-      <div className="pad12" style={{ borderTop: '1px solid var(--line-2)' }}>
-        <Note>
-          {role === 'customer'
-            ? '客户角色 → Policy 把 user_id 强制改回本人。'
-            : 'P-LLM 只看自己写的代码，看不到变量内容。'}
-        </Note>
+      <div className="pad14 col gap10 fill scroll">
+        {!latestPlan && <span className="muted sm">发送指令后，这里显示 P-LLM 生成的结构化计划与能力标注。</span>}
+        {latestPlan && (
+          <>
+            <span className="eyebrow">意图 intent</span>
+            <span className="sm muted2">{latestPlan.intent}</span>
+            <div className="divln" />
+            <span className="eyebrow">步骤能力 capabilities</span>
+            {latestPlan.steps.map((s) => (
+              <div key={s.step_no} className="row vcenter gap8 sm muted2">
+                <Dot k={capDot(s.kind)} />
+                <span className="mono xs" style={{ width: 14 }}>{s.step_no}</span>
+                <span className="fill">{s.op_key ?? s.kind}</span>
+                <Tag k={s.capability_out}>{s.capability_out}</Tag>
+              </div>
+            ))}
+            {latestPlan.policy_hints.length > 0 && (
+              <>
+                <div className="divln" />
+                <span className="eyebrow">策略提示 policy</span>
+                {latestPlan.policy_hints.map((h, i) => <span key={i} className="xs muted">· {h}</span>)}
+              </>
+            )}
+            <Note>P-LLM 只产出结构化计划，看不到具体数据；写操作经策略与人审后才执行。</Note>
+          </>
+        )}
       </div>
     </div>
   );
