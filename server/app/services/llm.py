@@ -35,6 +35,20 @@ class LLMClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None):
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
         self.api_key = api_key or settings.llm_api_key
+        self._client: httpx.AsyncClient | None = None
+
+    def _http(self) -> httpx.AsyncClient:
+        # one pooled client reused across calls (keep-alive); closed on shutdown
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
 
     async def chat(
         self,
@@ -48,20 +62,20 @@ class LLMClient:
         if not self.api_key:
             raise LLMError("LLM_API_KEY is not configured")
         started = time.monotonic()
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
-            )
+        resp = await self._http().post(
+            f"{self.base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=timeout,
+        )
         latency = int((time.monotonic() - started) * 1000)
         if resp.status_code != 200:
             raise LLMError(f"LLM {model} HTTP {resp.status_code}: {resp.text[:300]}")

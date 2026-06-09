@@ -24,9 +24,12 @@ async def list_sources(p: Principal = Depends(get_principal), db: AsyncSession =
     rows = (
         await db.execute(select(DataSource).where(DataSource.tenant_id == p.tenant_id).order_by(DataSource.created_at))
     ).scalars().all()
+    def conn(s: DataSource) -> str:
+        # connection strings can carry hosts/paths — full value is admin-only
+        return s.conn if p.is_admin else (s.conn.split("·")[0].strip() if "·" in s.conn else "（已隐藏）")
     return {"items": [{
         "id": str(s.id), "type": s.type, "name": s.name, "connector_kind": s.connector_kind,
-        "conn": s.conn, "status": s.status, "progress": s.config_json.get("progress"),
+        "conn": conn(s), "status": s.status, "progress": s.config_json.get("progress"),
     } for s in rows]}
 
 

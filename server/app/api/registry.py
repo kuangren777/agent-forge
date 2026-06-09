@@ -15,15 +15,6 @@ from app.models.registry import Operation, OperationPermission
 router = APIRouter(tags=["registry"])
 
 
-async def _roles_for(db: AsyncSession, op_id: uuid.UUID) -> tuple[list[str], dict[str, str]]:
-    perms = (
-        await db.execute(select(OperationPermission).where(OperationPermission.operation_id == op_id))
-    ).scalars().all()
-    roles = [p.subject_id for p in perms if p.subject_type == "role" and p.effect == "allow"]
-    scopes = {p.subject_id: p.condition_json.get("scope") for p in perms if p.condition_json.get("scope")}
-    return roles, scopes
-
-
 def _perm_label(roles: list[str]) -> str:
     rs = set(roles)
     if "customer" in rs:
@@ -33,14 +24,22 @@ def _perm_label(roles: list[str]) -> str:
     return "admin"
 
 
-async def _serialize(db: AsyncSession, op: Operation) -> dict:
-    roles, scopes = await _roles_for(db, op.id)
+def _serialize_with(op: Operation, perms: list[OperationPermission]) -> dict:
+    roles = [p.subject_id for p in perms if p.subject_type == "role" and p.effect == "allow"]
+    scopes = {p.subject_id: p.condition_json.get("scope") for p in perms if p.condition_json.get("scope")}
     return {
         "id": str(op.id), "op_key": op.op_key, "version": op.version, "kind": op.kind,
         "confirm_level": op.confirm_level, "risk_level": op.risk_level, "status": op.status,
         "executor_binding": op.executor_binding, "policy_ref": op.policy_ref,
         "roles": roles, "perm": _perm_label(roles), "scopes": scopes,
     }
+
+
+async def _serialize(db: AsyncSession, op: Operation) -> dict:
+    perms = (
+        await db.execute(select(OperationPermission).where(OperationPermission.operation_id == op.id))
+    ).scalars().all()
+    return _serialize_with(op, list(perms))
 
 
 @router.get("/operations")
@@ -50,10 +49,18 @@ async def list_operations(
     ops = (
         await db.execute(select(Operation).where(Operation.tenant_id == p.tenant_id).order_by(Operation.op_key))
     ).scalars().all()
+    # batch-load permissions for all ops at once (no per-op N+1)
+    op_ids = [op.id for op in ops]
+    perms_by_op: dict = {}
+    if op_ids:
+        perms = (
+            await db.execute(select(OperationPermission).where(OperationPermission.operation_id.in_(op_ids)))
+        ).scalars().all()
+        for pm in perms:
+            perms_by_op.setdefault(pm.operation_id, []).append(pm)
     items = []
     for op in ops:
-        data = await _serialize(db, op)
-        # RBAC: non-admins only see operations their role may call
+        data = _serialize_with(op, perms_by_op.get(op.id, []))
         if p.role != "admin" and p.role not in data["roles"]:
             continue
         items.append(data)

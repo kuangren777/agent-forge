@@ -67,7 +67,7 @@ async def get_messages(
     out = []
     for m in msgs:
         item = {"id": str(m.id), "role": m.role, "content": m.content,
-                "created_at": m.created_at, "plan": None}
+                "created_at": m.created_at.isoformat(), "plan": None}
         if m.plan_id:
             plan = await db.get(ExecutionPlan, m.plan_id)
             if plan:
@@ -91,7 +91,7 @@ async def send_message(
     if not body.content.strip():
         raise HTTPException(status_code=400, detail="empty message")
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
     db.add(ChatMessage(session_id=session_id, role="user", content=body.content, created_at=now))
     if s.title == "新会话":
         s.title = body.content.strip()[:40]
@@ -115,7 +115,7 @@ async def send_message(
     plan_data = await _serialize_plan(db, plan)
 
     db.add(ChatMessage(session_id=session_id, role="assistant", content=reply,
-                       plan_id=plan.id, created_at=datetime.now(timezone.utc).isoformat()))
+                       plan_id=plan.id, created_at=datetime.now(timezone.utc)))
     await db.commit()
     return {"reply": reply, "plan": plan_data}
 

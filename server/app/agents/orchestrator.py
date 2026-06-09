@@ -36,13 +36,17 @@ async def _available_operations(db: AsyncSession, tenant_id: uuid.UUID, role: st
             )
         )
     ).scalars().all()
+    op_ids = [op.id for op in ops]
+    perms_by_op: dict = {}
+    if op_ids:
+        perms = (
+            await db.execute(select(OperationPermission).where(OperationPermission.operation_id.in_(op_ids)))
+        ).scalars().all()
+        for pm in perms:
+            perms_by_op.setdefault(pm.operation_id, []).append(pm)
     out = []
     for op in ops:
-        perms = (
-            await db.execute(
-                select(OperationPermission).where(OperationPermission.operation_id == op.id)
-            )
-        ).scalars().all()
+        perms = perms_by_op.get(op.id, [])
         roles = [p.subject_id for p in perms if p.subject_type == "role" and p.effect == "allow"]
         out.append({
             "op_key": op.op_key, "kind": op.kind, "confirm_level": op.confirm_level,

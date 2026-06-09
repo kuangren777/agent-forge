@@ -25,7 +25,9 @@ async def lifespan(app: FastAPI):
     log.info("agent-forge starting env=%s demo_login=%s", settings.app_env, settings.demo_login_enabled)
     yield
     from app.queue import close_pool
+    from app.services.llm import llm
     await close_pool()
+    await llm.aclose()
     log.info("agent-forge shutting down")
 
 

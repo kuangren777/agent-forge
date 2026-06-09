@@ -32,6 +32,8 @@ Keep it realistic and concise (3-6 operations)."""
 
 
 async def _emit(db, job_id: uuid.UUID, event_type: str, payload: dict) -> None:
+    # lock the job row so concurrent emits can't collide on seq (uq_expl_event_seq)
+    await db.execute(select(ExplorationJob.id).where(ExplorationJob.id == job_id).with_for_update())
     seq = (
         await db.execute(
             select(func.coalesce(func.max(ExplorationEvent.seq), 0)).where(

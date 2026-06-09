@@ -1,7 +1,8 @@
 """Chat sessions, messages, execution plans and steps."""
 import uuid
+from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,7 +26,7 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)  # user|assistant|system
     content: Mapped[str] = mapped_column(Text, nullable=False)
     plan_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("execution_plans.id"), nullable=True)
-    created_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ExecutionPlan(Base, TimestampMixin):

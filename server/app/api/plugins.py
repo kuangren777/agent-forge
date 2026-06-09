@@ -20,17 +20,26 @@ async def list_plugins(p: Principal = Depends(get_principal), db: AsyncSession =
     plugins = (
         await db.execute(select(Plugin).where(Plugin.tenant_id == p.tenant_id).order_by(Plugin.created_at))
     ).scalars().all()
+    # batch-load all registrations for these plugins (no per-plugin N+1)
+    ids = [pl.id for pl in plugins]
+    regs_by_plugin: dict = {}
+    if ids:
+        regs = (
+            await db.execute(select(PluginRegistration).where(PluginRegistration.plugin_id.in_(ids)))
+        ).scalars().all()
+        for r in regs:
+            regs_by_plugin.setdefault(r.plugin_id, []).append(r)
     items = []
     for pl in plugins:
-        regs = (
-            await db.execute(select(PluginRegistration).where(PluginRegistration.plugin_id == pl.id))
-        ).scalars().all()
-        items.append({
+        item = {
             "id": str(pl.id), "iface": pl.iface, "sub": pl.sub, "icon": pl.icon,
-            "code": pl.code_signature,
             "impls": [{"name": r.impl_name, "status": r.status, "version": r.version,
-                       "health": r.health} for r in regs],
-        })
+                       "health": r.health} for r in regs_by_plugin.get(pl.id, [])],
+        }
+        # the interface source signature is internal — admin only
+        if p.is_admin:
+            item["code"] = pl.code_signature
+        items.append(item)
     return {"items": items}
 
 
