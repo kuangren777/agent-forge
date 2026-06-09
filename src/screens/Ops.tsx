@@ -3,7 +3,69 @@ import { useApp } from '../lib/appContext';
 import { useMe } from '../features/auth';
 import { useOperations, usePublishOperation, useDisableOperation } from '../features/operations';
 import { useApprovals, useVote } from '../features/approvals';
+import { useLlmProfiles, useLlmModels, usePatchProfile } from '../features/llm';
+import { useState } from 'react';
 import type { ApprovalRequest, Operation } from '../api/types';
+
+const ROLE_LABEL: Record<string, string> = { pllm: 'P-LLM · 规划', qllm: 'Q-LLM · 解析' };
+
+function LlmSettingsPanel() {
+  const { toast } = useApp();
+  const { data } = useLlmProfiles();
+  const [fetchModels, setFetchModels] = useState(false);
+  const models = useLlmModels(fetchModels);
+  const patch = usePatchProfile();
+  const [edit, setEdit] = useState<Record<string, { model?: string; max_tokens?: number }>>({});
+
+  const items = data?.items ?? [];
+  const opts = models.data?.models ?? [];
+
+  return (
+    <div className="col gap8" style={{ marginTop: 16 }}>
+      <div className="row vcenter between">
+        <span className="eyebrow">模型设置 · LLM profiles</span>
+        <button className="btn sm" disabled={models.isFetching}
+          onClick={() => setFetchModels(true)}>
+          {models.isFetching ? '拉取中…' : '拉取可用模型'}
+        </button>
+      </div>
+      {items.map((p) => {
+        const e = edit[p.role] ?? {};
+        const model = e.model ?? p.model;
+        const maxTok = e.max_tokens ?? p.max_tokens;
+        return (
+          <div key={p.role} className="card pad12 row vcenter gap10 wrap">
+            <span className="b sm" style={{ width: 92 }}>{ROLE_LABEL[p.role] ?? p.role}</span>
+            {opts.length ? (
+              <select value={model} onChange={(ev) => setEdit({ ...edit, [p.role]: { ...e, model: ev.target.value } })}
+                style={selStyle}>
+                {[model, ...opts.filter((m) => m !== model)].map((m) => <option key={m}>{m}</option>)}
+              </select>
+            ) : (
+              <input value={model} onChange={(ev) => setEdit({ ...edit, [p.role]: { ...e, model: ev.target.value } })}
+                style={selStyle} />
+            )}
+            <label className="row vcenter gap5 xs muted">max_tokens
+              <input type="number" value={maxTok} style={{ ...selStyle, width: 90 }}
+                onChange={(ev) => setEdit({ ...edit, [p.role]: { ...e, max_tokens: Number(ev.target.value) } })} />
+            </label>
+            <Btn sz="sm" k="go" ic="check" disabled={patch.isPending}
+              onClick={() => patch.mutate({ role: p.role, body: { model, max_tokens: maxTok } },
+                { onSuccess: () => toast(`已更新 ${p.role} 模型为 ${model}`), onError: (er) => toast((er as Error).message, 'warn') })}>
+              保存
+            </Btn>
+          </div>
+        );
+      })}
+      {data && <span className="xs muted">网关：{data.base_url} · 改动即时生效，无需重启</span>}
+    </div>
+  );
+}
+
+const selStyle: React.CSSProperties = {
+  height: 28, border: '1px solid var(--line)', borderRadius: 6, padding: '0 8px',
+  font: 'inherit', fontSize: 12, background: 'var(--paper)', minWidth: 200,
+};
 
 function ApprovalRow({ ar }: { ar: ApprovalRequest }) {
   const { toast } = useApp();
@@ -106,6 +168,7 @@ export function OpsMain() {
             <Chip ic="bolt">Executor: API · Function · SQL · RPA</Chip>
           </div>
           <ApprovalsPanel />
+          <LlmSettingsPanel />
         </div>
       )}
     </div>

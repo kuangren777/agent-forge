@@ -83,3 +83,12 @@ export interface ApprovalRequest {
 }
 
 export interface ExplorationJob { id: string; source_id: string; status: string; phase: number; progress: number }
+
+export interface LlmProfile {
+  role: 'pllm' | 'qllm';
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  timeout_s: number;
+}
+export interface LlmProfiles { base_url: string; items: LlmProfile[] }
