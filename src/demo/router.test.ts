@@ -9,7 +9,7 @@ import { ApiError } from '../api/http';
 import { dispatchDemo } from './router';
 import { createDemoState } from './state';
 import type { DemoState } from './state';
-import type { Me, Plan } from '../api/types';
+import type { ChatMessage, Me, Plan } from '../api/types';
 
 // Stub all pacing sleeps to resolve instantly
 vi.mock('./pacing', () => ({
@@ -24,6 +24,7 @@ let state: DemoState;
 
 beforeEach(() => {
   state = createDemoState();
+  localStorage.clear();
 });
 
 // ────────────────────────────────────────────────
@@ -69,6 +70,15 @@ describe('auth', () => {
   it('/me throws 401 if not logged in', async () => {
     await expect(dispatchDemo(state, 'GET', '/me', undefined)).rejects.toThrow(ApiError);
   });
+
+  it('/me recovers identity from persisted token after state reset (page reload)', async () => {
+    const res = await dispatchDemo(state, 'POST', '/auth/login', { role: 'employee' }) as { token: string };
+    localStorage.setItem('agentforge.token', res.token);
+    const fresh = createDemoState(); // simulates reload: in-memory state gone, token persisted
+    const me = await dispatchDemo(fresh, 'GET', '/me', undefined) as Me;
+    expect(me.acting_role).toBe('employee');
+    expect(fresh.currentUserId).toBe('u-wei');
+  });
 });
 
 // ────────────────────────────────────────────────
@@ -105,6 +115,12 @@ describe('chat scenario A — refund expedite', () => {
     const confirmed = await dispatchDemo(state, 'POST', `/plans/${plan.id}/confirm`, undefined) as Plan;
     expect(confirmed.status).toBe('done');
     expect(confirmed.blocked).toBe(false);
+
+    // Refetched messages must see the updated plan status (same object ref),
+    // otherwise the chat plan card keeps showing the 确认执行 button.
+    const msgs = await dispatchDemo(state, 'GET', `/chat/sessions/${sessId}/messages`, undefined) as { items: ChatMessage[] };
+    const planMsg = msgs.items.find(m => m.plan?.id === plan.id);
+    expect(planMsg?.plan?.status).toBe('done');
 
     // Trace should now exist
     const traces = await dispatchDemo(state, 'GET', '/traces', undefined) as { items: Array<{ id: string; title: string }> };

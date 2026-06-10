@@ -3,7 +3,7 @@
  * All handlers accept the demo state as first argument for test isolation.
  */
 
-import { ApiError } from '../api/http';
+import { ApiError, getToken } from '../api/http';
 import type { AuditEvent, ChatMessage, Execution, FlowEdge, FlowNode, LlmProfile, TraceSummary } from '../api/types';
 import {
   buildScenarioAPlan, buildScenarioADonePlan,
@@ -319,34 +319,32 @@ route('POST', /^\/plans\/([^/]+)\/confirm$/, async (state, _m, path) => {
   const scenario = (state as unknown as Record<string, unknown>)[`plan:${planId}:traceId`] ? 'A' : 'unknown';
   const traceId = (state as unknown as Record<string, unknown>)[`plan:${planId}:traceId`] as string;
 
+  // Mutate the stored plan in place: chat messages embed the same object
+  // reference, so refetched messages must see the updated status.
   if (plan.required_confirm_level === 'dual') {
     // Scenario B — check if approval is complete
     const appr = state.approvals.find(a => a.target_id === planId);
     if (!appr || appr.approve_votes < appr.required_votes) {
-      const updatedPlan = { ...plan, blocked: true };
-      (state as unknown as Record<string, unknown>)[`plan:${planId}`] = updatedPlan;
-      return { ...updatedPlan };
+      Object.assign(plan, { blocked: true });
+      return { ...plan };
     }
     // Both votes in — approve
-    const donePlan = { ...plan, status: 'done', blocked: false };
-    (state as unknown as Record<string, unknown>)[`plan:${planId}`] = donePlan;
-    return donePlan;
+    Object.assign(plan, { status: 'done', blocked: false });
+    return { ...plan };
   }
 
   // Scenario A
-  const donePlan = buildScenarioADonePlan(planId, traceId);
-  (state as unknown as Record<string, unknown>)[`plan:${planId}`] = donePlan;
+  Object.assign(plan, buildScenarioADonePlan(planId, traceId));
   // Materialize trace A
   materializeTraceA(state, traceId);
-  return { ...donePlan };
+  return { ...plan };
 });
 
 route('POST', /^\/plans\/([^/]+)\/cancel$/, async (state, _m, path) => {
   const planId = path.match(/\/plans\/([^/]+)\/cancel$/)![1];
   const plan = (state as unknown as Record<string, unknown>)[`plan:${planId}`] as { id: string; status: string } | undefined;
   if (!plan) throw new ApiError(404, 'plan not found');
-  const cancelled = { ...plan, status: 'cancelled' };
-  (state as unknown as Record<string, unknown>)[`plan:${planId}`] = cancelled;
+  plan.status = 'cancelled';
   return { id: plan.id, status: 'cancelled' };
 });
 
@@ -452,7 +450,16 @@ export async function defaultDispatch(method: string, path: string, body?: unkno
 // ────────────────────────────────────────────────
 
 function getCurrentUser(state: DemoState) {
-  const userId = state.currentUserId;
+  let userId = state.currentUserId;
+  if (!userId) {
+    // In-memory state resets on page reload; recover identity from the
+    // persisted bearer token (format: demo-<userId>-<timestamp>).
+    const m = getToken()?.match(/^demo-(.+)-\d+$/);
+    if (m) {
+      userId = m[1];
+      state.currentUserId = userId;
+    }
+  }
   if (!userId) throw new ApiError(401, '未登录');
   const user = DEMO_USERS.find(u => u.id === userId);
   if (!user) throw new ApiError(401, '用户不存在');

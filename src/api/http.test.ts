@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ApiError, getToken, setDemoAdapter, setToken, api } from './http';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ApiError, getToken, setDemoAdapter, setToken, subscribeToken, api } from './http';
 
 describe('http token store', () => {
   beforeEach(() => localStorage.clear());
@@ -55,5 +55,20 @@ describe('DemoAdapter', () => {
     // Just verify no crash when adapter is removed (actual network call would fail in test)
     // We can't test real fetch in unit tests, but we verify the adapter is cleared
     expect(getToken()).toBeNull();
+  });
+});
+
+describe('subscribeToken', () => {
+  it('notifies listeners on setToken (login re-render contract)', () => {
+    const fn = vi.fn();
+    const unsub = subscribeToken(fn);
+    setToken('tok-1');
+    expect(fn).toHaveBeenCalledTimes(1);
+    setToken(null);
+    expect(fn).toHaveBeenCalledTimes(2);
+    unsub();
+    setToken('tok-2');
+    expect(fn).toHaveBeenCalledTimes(2);
+    setToken(null);
   });
 });
