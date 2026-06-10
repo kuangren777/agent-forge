@@ -6,12 +6,21 @@ import App from './App';
 import { queryClient } from './api/queryClient';
 import { AppProvider } from './lib/appContext';
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <AppProvider>
-        <App />
-      </AppProvider>
-    </QueryClientProvider>
-  </StrictMode>
-);
+async function bootstrap() {
+  if (import.meta.env.VITE_DEMO === '1') {
+    const { installDemo } = await import('./demo/install');
+    installDemo();
+  }
+
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <AppProvider>
+          <App />
+        </AppProvider>
+      </QueryClientProvider>
+    </StrictMode>
+  );
+}
+
+bootstrap();
