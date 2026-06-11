@@ -47,7 +47,7 @@ cp .env.example .env          # set LLM_API_KEY (camel-hub) — see below
 docker compose up -d          # postgres:5544, redis:6390
 uv sync
 uv run alembic upgrade head   # create schema
-uv run python -m app.seed     # seed a real demo org (replaces old mock fixtures)
+uv run python -m app.seed     # seed a sample org with business records
 uv run uvicorn app.main:app --port 8099
 ```
 
