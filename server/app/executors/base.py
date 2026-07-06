@@ -6,15 +6,40 @@ compensation (`rollback`) — there is no mock toast path.
 """
 from __future__ import annotations
 
+import json
+import re
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.business import BizRecord
+from app.services import targets
+
+
+def _truncate(payload: Any, limit: int = 4000) -> Any:
+    """Cap stored response payloads so audit rows stay bounded."""
+    text = json.dumps(payload, ensure_ascii=False, default=str)
+    if len(text) <= limit:
+        return payload
+    return {"_truncated": True, "preview": text[:limit]}
+
+
+def _rows(payload: Any) -> list[dict]:
+    """Normalize an arbitrary JSON API response into list[dict] rows."""
+    if isinstance(payload, list):
+        return [x if isinstance(x, dict) else {"value": x} for x in payload[:200]]
+    if isinstance(payload, dict):
+        for key in ("items", "data", "results", "records", "list", "rows", "value"):
+            v = payload.get(key)
+            if isinstance(v, list):
+                return [x if isinstance(x, dict) else {"value": x} for x in v[:200]]
+        return [payload]
+    return [{"value": payload}]
 
 
 @dataclass
@@ -108,15 +133,94 @@ class FunctionExecutor(Executor):
 
 
 class APIExecutor(Executor):
-    """Calls an external HTTP API bound to the operation (config-driven)."""
+    """Calls the real external HTTP API bound to the operation.
+
+    Binding lives in `operations.binding_json` ({source_id, method, path,
+    params, body_fields}); connection + auth come from the DataSource's
+    `config_json` (secrets resolved from process env — see services/targets).
+    A missing binding is an explicit error, never a silent fallback.
+    """
     name = "APIExecutor"
 
-    async def execute(self, db, tenant_id, op_key, kwargs):
-        # No external binding configured in this deployment → fall back to function semantics.
-        return await FunctionExecutor().execute(db, tenant_id, op_key, kwargs)
+    async def _resolve(self, db, tenant_id, op_key):
+        from app.models.registry import Operation
+        from app.models.sources import DataSource
+
+        op = (
+            await db.execute(
+                select(Operation)
+                .where(Operation.tenant_id == tenant_id, Operation.op_key == op_key)
+                .order_by(Operation.version.desc())
+            )
+        ).scalars().first()
+        binding = (op.binding_json or {}) if op else {}
+        if not binding.get("path"):
+            return None, None
+        source = await db.get(DataSource, uuid.UUID(binding["source_id"]))
+        return binding, (source.config_json or {}) if source else None
+
+    @staticmethod
+    def _fill_path(path: str, kwargs: dict) -> tuple[str | None, set[str], str | None]:
+        """Substitute {param} segments from kwargs. Returns (path, used, missing)."""
+        used: set[str] = set()
+        for name in re.findall(r"\{([^{}]+)\}", path):
+            # tolerate aliases: {id} matches kwargs id / <anything>_id
+            value = kwargs.get(name)
+            if value is None and name == "id":
+                value = next((v for k, v in kwargs.items() if k.endswith("_id")), None)
+            if value is None:
+                return None, used, name
+            path = path.replace("{" + name + "}", str(value))
+            used.add(name)
+        return path, used, None
+
+    async def _call(self, db, tenant_id, op_key, kwargs) -> tuple[Any, ExecutorResult]:
+        binding, config = await self._resolve(db, tenant_id, op_key)
+        if binding is None or config is None:
+            return None, ExecutorResult(error_code="no_binding")
+        path, used, missing = self._fill_path(binding["path"], dict(kwargs))
+        if missing:
+            return None, ExecutorResult(error_code=f"missing_param:{missing}")
+        method = binding.get("method", "GET").upper()
+        rest = {k: v for k, v in kwargs.items()
+                if k not in used and v is not None and k != "user_id"}
+        try:
+            async with targets.client_for(config) as client:
+                if method in ("GET", "DELETE"):
+                    resp = await client.request(method, path, params=rest)
+                else:
+                    body_fields = binding.get("body_fields") or []
+                    body = {k: v for k, v in rest.items() if not body_fields or k in body_fields}
+                    query = {k: v for k, v in rest.items() if k not in body}
+                    resp = await client.request(method, path, json=body, params=query or None)
+        except httpx.HTTPError as exc:
+            return None, ExecutorResult(error_code=f"network_error:{type(exc).__name__}")
+        try:
+            payload: Any = resp.json()
+        except ValueError:
+            payload = resp.text[:2000]
+        result = ExecutorResult(
+            before_state={},
+            after_state={"http_status": resp.status_code, "method": method, "path": path,
+                         "response": _truncate(payload)},
+            error_code=None if resp.status_code < 400 else f"http_{resp.status_code}",
+        )
+        return payload, result
 
     async def read(self, db, tenant_id, op_key, kwargs):
-        return await FunctionExecutor().read(db, tenant_id, op_key, kwargs)
+        payload, result = await self._call(db, tenant_id, op_key, kwargs)
+        if result.error_code or payload is None:
+            return [{"error": result.error_code}] if result.error_code else []
+        return _rows(payload)
+
+    async def execute(self, db, tenant_id, op_key, kwargs):
+        _, result = await self._call(db, tenant_id, op_key, kwargs)
+        return result
+
+    async def rollback(self, db, before_state, after_state):
+        # external side effects are not auto-reversible; surface the captured states
+        return {"note": "external API effect — manual compensation may be required",
+                "before": before_state}
 
 
 class SQLExecutor(Executor):

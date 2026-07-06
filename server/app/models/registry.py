@@ -25,6 +25,8 @@ class Operation(Base, TimestampMixin):
     output_schema_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     executor_binding: Mapped[str | None] = mapped_column(String(80), nullable=True)
     rollback_binding: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # real external call binding: {"source_id":..,"method":..,"path":..,"params":{..},"body_fields":[..]}
+    binding_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     policy_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_from_job_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("exploration_jobs.id"), nullable=True
