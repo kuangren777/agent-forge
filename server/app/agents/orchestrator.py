@@ -253,6 +253,12 @@ async def confirm_plan(db: AsyncSession, plan: ExecutionPlan, *, approver: Ident
     plan.status = "partial_failed" if had_error else "done"
     trace.status = "open" if had_error else "closed"
     await db.flush()
+    # expose execution results to the caller (chat reply summarization) without
+    # persisting raw data on the plan row
+    plan.exec_context = {**ctx, "steps": [
+        {"step_no": st.step_no, "kind": st.kind, "op_key": st.op_key,
+         "label": st.label, "status": st.status} for st in steps
+    ]}
     return plan
 
 

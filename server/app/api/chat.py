@@ -80,6 +80,44 @@ class MessageIn(BaseModel):
     content: str
 
 
+def _human_row(r: dict) -> str:
+    pairs = []
+    for k, v in list(r.items())[:4]:
+        s = str(v)
+        pairs.append(f"{k}: {s[:40] + '…' if len(s) > 40 else s}")
+    return "，".join(pairs)
+
+
+def _result_reply(plan) -> str:
+    """Plain-language execution summary for domain experts (no tech jargon)."""
+    ctx = getattr(plan, "exec_context", None)
+    if not ctx:
+        return f"已完成：{plan.intent}"
+    rows = ctx.get("rows") or []
+    steps = ctx.get("steps") or []
+    lines: list[str] = []
+    queries = [s for s in steps if s["kind"] == "query"]
+    writes = [s for s in steps if s["kind"] == "write"]
+    if queries:
+        errors = [r["error"] for r in rows if isinstance(r, dict) and set(r) == {"error"}]
+        real_rows = [r for r in rows if not (isinstance(r, dict) and set(r) == {"error"})]
+        if real_rows:
+            lines.append(f"查询完成，共找到 {len(real_rows)} 条数据，例如：")
+            lines += [f"· {_human_row(r)}" for r in real_rows[:3]]
+            if len(real_rows) > 3:
+                lines.append(f"（其余 {len(real_rows) - 3} 条可在「数据流」页查看）")
+        elif errors:
+            lines.append("查询时访问业务系统失败了，已记录详细原因（可在「审计」页查看），请稍后重试或联系管理员。")
+        else:
+            lines.append("查询完成，但没有找到符合条件的数据。可以换个说法或放宽条件再试。")
+    for s in writes:
+        if s["status"] == "done":
+            lines.append(f"✅ 已完成：{s['label']}")
+        else:
+            lines.append(f"⚠️ 未成功：{s['label']}。失败原因已记录在「审计」页，数据没有被改动。")
+    return "\n".join(lines) or f"已完成：{plan.intent}"
+
+
 @router.post("/chat/sessions/{session_id}/messages")
 async def send_message(
     session_id: uuid.UUID, body: MessageIn,
@@ -103,14 +141,18 @@ async def send_message(
     )
 
     if plan.status == "denied":
-        reply = "该请求被策略拒绝，未生成可执行计划。"
+        reply = "这个请求超出了你的权限范围，没有执行。如需办理，请联系管理员开通相应权限。"
     elif plan.required_confirm_level == "auto":
         # no human gate → execute the (read-only) plan now and report truthfully
         plan = await orchestrator.confirm_plan(db, plan, approver=p.identity)
-        reply = (f"已规划并执行：{plan.intent}" if plan.status == "done"
-                 else f"已规划，但执行未完全成功（{plan.status}）。")
+        reply = (_result_reply(plan) if plan.status == "done"
+                 else f"已生成方案，但执行没有完全成功。{_result_reply(plan)}".strip())
+    elif plan.required_confirm_level == "dual":
+        reply = (f"我准备好了这个方案（含 {plan.writes} 个修改动作）。这类操作影响较大，"
+                 "需要另一位管理员在「审批」页同意后，你再点「确认执行」。")
     else:
-        reply = f"我将执行以下操作，涉及 {plan.writes} 个写操作，需要确认（{plan.required_confirm_level}）。"
+        reply = (f"我准备好了这个方案（含 {plan.writes} 个修改动作）。"
+                 "请核对下方步骤，点「确认执行」后才会真正生效。")
 
     plan_data = await _serialize_plan(db, plan)
 
@@ -148,9 +190,17 @@ async def confirm_plan(
 ) -> dict:
     plan = await _owned_plan(db, p, plan_id)
     plan = await orchestrator.confirm_plan(db, plan, approver=p.identity)
+    reply = None
+    if plan.status in ("done", "partial_failed") and getattr(plan, "exec_context", None):
+        # surface the real outcome in the conversation, in plain language
+        reply = _result_reply(plan)
+        db.add(ChatMessage(session_id=plan.session_id, role="assistant", content=reply,
+                           plan_id=plan.id, created_at=datetime.now(timezone.utc)))
     await db.commit()
     data = await _serialize_plan(db, plan)
     data["blocked"] = plan.status not in ("done", "executing")
+    if reply:
+        data["reply"] = reply
     return data
 
 
