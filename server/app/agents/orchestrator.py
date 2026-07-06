@@ -48,9 +48,18 @@ async def _available_operations(db: AsyncSession, tenant_id: uuid.UUID, role: st
     for op in ops:
         perms = perms_by_op.get(op.id, [])
         roles = [p.subject_id for p in perms if p.subject_type == "role" and p.effect == "allow"]
+        schema = op.input_schema_json or {}
+        params = schema.get("params") or {}
+        sig = ", ".join(
+            f"{n}({v.get('in', 'query')}{'*' if v.get('required') else ''})"
+            for n, v in list(params.items())[:8]
+        )
+        body = ", ".join(schema.get("body_fields") or [])
         out.append({
             "op_key": op.op_key, "kind": op.kind, "confirm_level": op.confirm_level,
-            "roles": roles, "risk": op.risk_level, "desc": op.policy_ref or "",
+            "roles": roles, "risk": op.risk_level,
+            "desc": schema.get("desc") or op.policy_ref or "",
+            "sig": sig, "body": body,
             "executor": op.executor_binding,
             "scope": next((p.condition_json.get("scope") for p in perms if p.condition_json), None),
         })

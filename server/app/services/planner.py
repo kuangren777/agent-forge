@@ -56,10 +56,15 @@ async def plan(
     instruction: str,
     operations: list[dict],
 ) -> dict:
-    catalogue = "\n".join(
-        f"- {o['op_key']} ({o['kind']}, confirm={o['confirm_level']}, roles={o['roles']}): {o.get('desc','')}"
-        for o in operations
-    ) or "- (none available)"
+    def _line(o: dict) -> str:
+        line = f"- {o['op_key']} ({o['kind']}, confirm={o['confirm_level']}, roles={o['roles']}): {o.get('desc', '')}"
+        if o.get("sig"):
+            line += f" | args: {o['sig']}"
+        if o.get("body"):
+            line += f" | body: {o['body']}"
+        return line
+
+    catalogue = "\n".join(_line(o) for o in operations) or "- (none available)"
 
     user = (
         f"Caller role: {role}\n"

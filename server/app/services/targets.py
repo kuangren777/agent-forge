@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import time
 from typing import Any
 
@@ -198,6 +199,30 @@ def summarize_endpoints(spec: dict, limit: int = 150) -> list[dict]:
                                 "params": params if method == "GET" else {},
                                 "body_fields": list(args.keys())[:12] if method != "GET" else []})
     return out[:limit]
+
+
+def normalize_manual(entries: list[dict]) -> list[dict]:
+    """Normalize admin-supplied endpoint catalogue (config_json.endpoints) —
+    the escape hatch for real systems that don't serve an OpenAPI spec."""
+    out = []
+    for e in entries or []:
+        method = str(e.get("method", "GET")).upper()
+        path = e.get("path")
+        if not path or method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+            continue
+        params = {}
+        for name, spec in (e.get("params") or {}).items():
+            if isinstance(spec, str):  # shorthand: {"q": "query"}
+                spec = {"in": spec}
+            params[name] = {"in": spec.get("in", "query"), "required": bool(spec.get("required")),
+                            "type": spec.get("type", "string"), "desc": (spec.get("desc") or "")[:80]}
+        # implicit path params from {placeholders}
+        for name in re.findall(r"\{([^{}]+)\}", path):
+            params.setdefault(name, {"in": "path", "required": True, "type": "string", "desc": ""})
+        out.append({"method": method, "path": path, "summary": (e.get("summary") or "")[:100],
+                    "tag": e.get("tag", ""), "params": params,
+                    "body_fields": list(e.get("body_fields") or [])[:12]})
+    return out
 
 
 def endpoint_digest(endpoints: list[dict], max_chars: int = 6000) -> str:

@@ -108,6 +108,19 @@ def test_endpoint_digest_compact():
     assert "q(query)" in digest
 
 
+def test_normalize_manual_shorthand_and_path_params():
+    eps = targets.normalize_manual([
+        {"method": "get", "path": "/api/user/{id}", "params": {"p": "query"}},
+        {"method": "POST", "path": "/api/user/", "body_fields": ["username", "email"]},
+        {"path": None},
+    ])
+    assert len(eps) == 2
+    assert eps[0]["method"] == "GET"
+    assert eps[0]["params"]["id"] == {"in": "path", "required": True, "type": "string", "desc": ""}
+    assert eps[0]["params"]["p"]["in"] == "query"
+    assert eps[1]["body_fields"] == ["username", "email"]
+
+
 # ---------- APIExecutor helpers ----------
 
 def test_fill_path_substitution_and_aliases():

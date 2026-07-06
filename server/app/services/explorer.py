@@ -105,9 +105,15 @@ async def run_exploration(job_id: uuid.UUID) -> None:
             spec_url, spec = await targets.discover_spec(cfg)
             if spec is not None:
                 endpoints = targets.summarize_endpoints(spec)
+            # admin-supplied catalogue (config_json.endpoints) is always honoured —
+            # the escape hatch for real systems that serve no machine-readable spec
+            manual = targets.normalize_manual(cfg.get("endpoints") or [])
+            seen = {(e["method"], e["path"]) for e in endpoints}
+            endpoints += [e for e in manual if (e["method"], e["path"]) not in seen]
+            mode = "openapi" if spec is not None else ("manual" if manual else "no-spec")
             await _emit(db, job_id, "spec", {
-                "spec_url": spec_url, "endpoints": len(endpoints),
-                "mode": "openapi" if endpoints else "no-spec",
+                "spec_url": spec_url, "endpoints": len(endpoints), "manual": len(manual),
+                "mode": mode,
             })
             await db.commit()
 
@@ -160,11 +166,14 @@ async def run_exploration(job_id: uuid.UUID) -> None:
                     "source_id": str(source.id), "method": ep["method"], "path": ep["path"],
                     "params": ep.get("params") or {}, "body_fields": ep.get("body_fields") or [],
                 }
-                input_schema = {"params": ep.get("params") or {}, "body_fields": ep.get("body_fields") or []}
+                input_schema = {"desc": str(op.get("desc", ""))[:200],
+                                "params": ep.get("params") or {},
+                                "body_fields": ep.get("body_fields") or []}
                 executor = "APIExecutor"
             else:
                 kind = op.get("kind") if op.get("kind") in ("query", "mutation") else "query"
                 executor = "FunctionExecutor"
+                input_schema = {"desc": str(op.get("desc", ""))[:200]}
             db.add(DiscoveredOperation(job_id=job_id, key=key, kind=kind,
                                        input_schema=input_schema, output_schema={},
                                        capability_requirements={}, executor_hint=executor))
