@@ -131,6 +131,8 @@ def _result_reply(plan) -> str:
             lines += [f"· {_human_row(r)}" for r in real_rows[:3]]
             if len(real_rows) > 3:
                 lines.append(f"（其余 {len(real_rows) - 3} 条可在「数据流」页查看）")
+        elif "not_connected" in errors:
+            lines.append("这个操作还没有连通到真实系统（尚未完成对接），所以查不到数据。请联系管理员完成该系统的对接后再试。")
         elif errors:
             lines.append("查询时访问业务系统失败了，已记录详细原因（可在「审计」页查看），请稍后重试或联系管理员。")
         else:

@@ -75,6 +75,15 @@ def _rows(payload: Any, _depth: int = 0) -> list[dict]:
                 v = payload.get(key)
                 if isinstance(v, dict):
                     return _rows(v, _depth + 1)
+        # map/group response (e.g. {"1":[...],"37":[...]} model groups): flatten
+        # all list values into rows so the count/preview is meaningful
+        vals = list(payload.values())
+        if vals and all(isinstance(v, list) for v in vals):
+            out: list[dict] = []
+            for group, items in payload.items():
+                for x in items:
+                    out.append(x if isinstance(x, dict) else {"group": group, "value": x})
+            return out[:200]
         return [payload]
     return [{"value": payload}]
 
@@ -124,7 +133,9 @@ class FunctionExecutor(Executor):
         kind = {"customer.query": "customer", "order.query": "order",
                 "refund.query": "refund"}.get(op_key)
         if kind is None:
-            return []
+            # not a built-in demo op and no real API binding → NOT connected.
+            # Signal an error envelope (never masquerade as "no data").
+            return [{"error": "not_connected"}]
         q = select(BizRecord).where(BizRecord.tenant_id == tenant_id, BizRecord.kind == kind)
         if owner:
             try:
@@ -161,8 +172,9 @@ class FunctionExecutor(Executor):
             await db.flush()
             return ExecutorResult(before_state=before, after_state=after)
 
-        # generic: record a no-op effect so the execution is still real + auditable
-        return ExecutorResult(before_state={}, after_state={"applied": op_key, "kwargs": kwargs})
+        # unknown op with no real binding → honest failure, NEVER a fake success
+        # (a metadata-only stub must not report a write it did not perform)
+        return ExecutorResult(error_code="not_connected")
 
     async def rollback(self, db, before_state, after_state):
         # restore by op kind inferred from keys present

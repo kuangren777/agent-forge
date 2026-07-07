@@ -253,3 +253,39 @@ def test_resolve_cross_step_refs():
     assert out["e"] == [7, "x"]
     # unresolved ref (no such step) left as-is so it surfaces at the executor
     assert _resolve_refs({"x": "$step9.foo"}, step_rows)["x"] == "$step9.foo"
+
+
+# ---------- kind inference + honesty + map responses ----------
+
+def test_infer_kind_semantic():
+    from app.services.explorer import _infer_kind
+    assert _infer_kind("GET", "user.list", "list users", "/users", "") == "query"
+    assert _infer_kind("DELETE", "x", "", "", "") == "mutation"
+    # Metabase-style POST reads → query
+    assert _infer_kind("POST", "search.find", "search saved questions", "/api/agent/v1/search", "") == "query"
+    assert _infer_kind("POST", "query.execute", "run a dataset query", "/api/dataset", "") == "query"
+    # POST creates/updates → mutation even with a read-ish word nearby
+    assert _infer_kind("POST", "card.create", "create a new question", "/api/card", "") == "mutation"
+    assert _infer_kind("PUT", "user.update", "update user", "/users/{id}", "") == "mutation"
+    # ambiguous POST with no signal → safe default mutation
+    assert _infer_kind("POST", "thing.do", "", "/x", "") == "mutation"
+
+
+def test_rows_map_of_lists_flattened():
+    # new-api /api/models style: {"data":{"1":[{..}],"37":[{..}]}}
+    payload = {"data": {"1": [{"id": "gpt-a"}], "37": [{"id": "gpt-b"}, {"id": "gpt-c"}]}, "success": True}
+    rows = _rows(payload)
+    assert len(rows) == 3
+    assert {r["id"] for r in rows} == {"gpt-a", "gpt-b", "gpt-c"}
+
+
+def test_function_executor_unknown_op_is_not_fake_success():
+    import asyncio
+    from app.executors.base import FunctionExecutor
+    fx = FunctionExecutor()
+    # unknown write op → honest not_connected error, never fake success
+    res = asyncio.run(fx.execute(None, None, "row.create", {"x": 1}))
+    assert res.error_code == "not_connected"
+    # unknown read op → error envelope, not empty "no data"
+    rows = asyncio.run(fx.read(None, None, "row.query", {}))
+    assert rows == [{"error": "not_connected"}]

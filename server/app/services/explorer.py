@@ -17,6 +17,7 @@ Sources without connection config fall back to metadata-only extraction
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -48,6 +49,35 @@ async def _emit(db, job_id: uuid.UUID, event_type: str, payload: dict) -> None:
     db.add(ExplorationEvent(job_id=job_id, seq=seq, event_type=event_type,
                             payload_json=payload, created_at=datetime.now(timezone.utc)))
     await db.flush()
+
+
+_WRITE_VERBS = ("create", "update", "delete", "insert", "remove", "set", "add",
+                "new", "edit", "patch", "upsert", "cancel", "send", "publish",
+                "assign", "revoke", "disable", "enable", "reset", "import", "upload")
+_READ_VERBS = ("search", "query", "find", "list", "get", "fetch", "read", "recent",
+               "report", "lookup", "count", "detail", "summary", "execute", "run",
+               "export", "download", "view", "stat")
+_WRITE_RE = re.compile(r"\b(" + "|".join(_WRITE_VERBS) + r")\b")
+_READ_RE = re.compile(r"\b(" + "|".join(_READ_VERBS) + r")\b")
+
+
+def _infer_kind(method: str, *texts: str) -> str:
+    """Classify an operation as query|mutation by INTENT, not just HTTP method.
+    GET/HEAD are always reads. For POST/PUT (some systems, e.g. Metabase, expose
+    reads as POST), downgrade to 'query' ONLY when the naming clearly signals a
+    read and shows no write verb — otherwise treat as a mutation (safe default:
+    writes require confirmation). Word-boundary matched so 'dataset' is not read
+    as 'set'."""
+    if method in ("GET", "HEAD"):
+        return "query"
+    if method == "DELETE":
+        return "mutation"
+    blob = " ".join(t.lower() for t in texts if t).replace(".", " ").replace("_", " ")
+    if _WRITE_RE.search(blob):
+        return "mutation"
+    if _READ_RE.search(blob):
+        return "query"
+    return "mutation"
 
 
 async def _discover_endpoints(db, job_id, source, cfg, prof) -> tuple[list[dict], str, str | None]:
@@ -198,7 +228,8 @@ async def run_exploration(job_id: uuid.UUID) -> None:
                         "method": op.get("method"), "path": op.get("path"),
                     })
                     continue
-                kind = "query" if ep["method"] in ("GET", "HEAD") else "mutation"
+                kind = _infer_kind(ep["method"], key, op.get("desc", ""),
+                                   ep.get("path", ""), ep.get("summary", ""))
                 binding = {
                     "source_id": str(source.id), "method": ep["method"], "path": ep["path"],
                     "params": ep.get("params") or {}, "body_fields": ep.get("body_fields") or [],
@@ -240,19 +271,19 @@ async def run_exploration(job_id: uuid.UUID) -> None:
         await db.commit()
 
 
-import re as _re
+
 
 
 def _source_slug(source) -> str:
     """Short stable slug identifying a source, for op-key qualification.
     Prefers the first ascii-alnum token of the name, else the base_url host,
     else a hex prefix of the source id."""
-    m = _re.search(r"[A-Za-z][A-Za-z0-9]{1,}", source.name or "")
+    m = re.search(r"[A-Za-z][A-Za-z0-9]{1,}", source.name or "")
     if m:
         return m.group(0).lower()
     base = (source.config_json or {}).get("base_url", "")
-    host = _re.sub(r"^https?://", "", base).split(":")[0].split("/")[0]
-    host = _re.sub(r"[^a-z0-9]", "", host.lower())
+    host = re.sub(r"^https?://", "", base).split(":")[0].split("/")[0]
+    host = re.sub(r"[^a-z0-9]", "", host.lower())
     return host or f"s{source.id.hex[:6]}"
 
 
