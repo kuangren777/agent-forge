@@ -80,12 +80,27 @@ class MessageIn(BaseModel):
     content: str
 
 
+# transport-envelope noise that means nothing to a business user
+_NOISE_KEYS = {"success", "message", "code", "msg", "status", "error", "errors",
+               "total", "page", "page_size", "per_page", "count"}
+
+
 def _human_row(r: dict) -> str:
     pairs = []
-    for k, v in list(r.items())[:4]:
+    for k, v in r.items():
+        if k in _NOISE_KEYS or isinstance(v, (dict, list)):
+            continue  # skip envelope noise + nested structures
         s = str(v)
+        if s == "":
+            continue
         pairs.append(f"{k}: {s[:40] + '…' if len(s) > 40 else s}")
-    return "，".join(pairs)
+        if len(pairs) >= 4:
+            break
+    if not pairs:  # fall back to whatever scalar fields exist
+        for k, v in list(r.items())[:3]:
+            if not isinstance(v, (dict, list)):
+                pairs.append(f"{k}: {str(v)[:40]}")
+    return "，".join(pairs) or "（1 条记录）"
 
 
 def _result_reply(plan) -> str:

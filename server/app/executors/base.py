@@ -29,15 +29,28 @@ def _truncate(payload: Any, limit: int = 4000) -> Any:
     return {"_truncated": True, "preview": text[:limit]}
 
 
-def _rows(payload: Any) -> list[dict]:
-    """Normalize an arbitrary JSON API response into list[dict] rows."""
+_ENVELOPE_KEYS = ("items", "data", "results", "records", "list", "rows", "value")
+
+
+def _rows(payload: Any, _depth: int = 0) -> list[dict]:
+    """Normalize an arbitrary JSON API response into list[dict] rows.
+
+    Handles common envelopes across systems: a list of rows, a `{items:[...]}`
+    style wrapper, or a `{data:{...}}` single-object wrapper (unwrapped one level
+    so domain-facing previews show business fields, not the transport envelope)."""
     if isinstance(payload, list):
         return [x if isinstance(x, dict) else {"value": x} for x in payload[:200]]
     if isinstance(payload, dict):
-        for key in ("items", "data", "results", "records", "list", "rows", "value"):
+        for key in _ENVELOPE_KEYS:
             v = payload.get(key)
             if isinstance(v, list):
                 return [x if isinstance(x, dict) else {"value": x} for x in v[:200]]
+        # single-object envelope (e.g. {data:{...},success:true}) → unwrap once
+        if _depth == 0:
+            for key in ("data", "result", "record"):
+                v = payload.get(key)
+                if isinstance(v, dict):
+                    return _rows(v, _depth + 1)
         return [payload]
     return [{"value": payload}]
 

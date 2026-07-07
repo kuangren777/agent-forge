@@ -159,6 +159,11 @@ def test_rows_normalization():
     assert _rows({"data": [1, 2]}) == [{"value": 1}, {"value": 2}]
     assert _rows({"total": 3}) == [{"total": 3}]
     assert _rows("x") == [{"value": "x"}]
+    # single-object envelope unwrapped one level (new-api style)
+    assert _rows({"data": {"username": "root", "quota": 100}, "success": True}) == \
+        [{"username": "root", "quota": 100}]
+    # nested list inside a data-envelope is unwrapped through to the rows
+    assert _rows({"data": {"items": [{"a": 1}]}}) == [{"a": 1}]
 
 
 def test_truncate_caps_payload():
