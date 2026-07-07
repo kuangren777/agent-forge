@@ -125,10 +125,88 @@ def _parse_json(text: str) -> dict[str, Any]:
         brace = text.find("{")
         if brace > 0:
             text = text[brace:]
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise LLMError(f"LLM did not return valid JSON: {text[:300]}") from exc
+        # trim trailing prose after the last closing brace
+        last = text.rfind("}")
+        if last != -1:
+            text = text[: last + 1]
+    # LLMs routinely emit raw newlines/tabs inside JSON string values, which
+    # strict json.loads rejects. strict=False tolerates control chars in strings;
+    # a second pass escapes any that remain. This keeps auto-adaptation robust —
+    # a single stray control char must not fail a whole discovery.
+    escaped = _escape_control_chars(text)
+    for attempt in (text, escaped, _repair_truncated(escaped)):
+        if attempt is None:
+            continue
+        try:
+            return json.loads(attempt, strict=False)
+        except json.JSONDecodeError:
+            continue
+    raise LLMError(f"LLM did not return valid JSON: {text[:300]}")
+
+
+def _repair_truncated(text: str) -> str | None:
+    """Salvage a JSON object truncated mid-string/array (token-limit cutoff):
+    cut back to the last complete element, then close open brackets. Lets a
+    truncated discovery still yield the endpoints that DID come through."""
+    depth = 0
+    in_str = esc = False
+    last_safe = -1          # index just after a top-of-array element boundary
+    stack: list[str] = []
+    for i, ch in enumerate(text):
+        if esc:
+            esc = False; continue
+        if ch == "\\":
+            esc = True; continue
+        if ch == '"':
+            in_str = not in_str; continue
+        if in_str:
+            continue
+        if ch in "{[":
+            stack.append(ch); depth += 1
+        elif ch in "}]":
+            if stack:
+                stack.pop(); depth -= 1
+            if ch == "}" and depth >= 1:  # closed an element inside an array/object
+                last_safe = i + 1
+    if last_safe == -1:
+        return None
+    head = text[:last_safe]
+    # reconstruct closers for whatever remained open at last_safe
+    depth2 = 0; in_str = esc = False; open_stack: list[str] = []
+    for ch in head:
+        if esc:
+            esc = False; continue
+        if ch == "\\":
+            esc = True; continue
+        if ch == '"':
+            in_str = not in_str; continue
+        if in_str:
+            continue
+        if ch in "{[":
+            open_stack.append(ch)
+        elif ch in "}]" and open_stack:
+            open_stack.pop()
+    closers = "".join("]" if c == "[" else "}" for c in reversed(open_stack))
+    return head + closers
+
+
+def _escape_control_chars(text: str) -> str:
+    """Escape raw control characters that appear inside JSON string literals."""
+    out, in_str, esc = [], False, False
+    for ch in text:
+        if esc:
+            out.append(ch); esc = False; continue
+        if ch == "\\":
+            out.append(ch); esc = True; continue
+        if ch == '"':
+            in_str = not in_str; out.append(ch); continue
+        if in_str and ch in "\n\r\t\b\f":
+            out.append({"\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f"}[ch])
+            continue
+        if in_str and ord(ch) < 0x20:
+            out.append(f"\\u{ord(ch):04x}"); continue
+        out.append(ch)
+    return "".join(out)
 
 
 # module-level singletons

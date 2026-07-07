@@ -28,30 +28,11 @@ from app.models.sources import (
     DataSource, DiscoveredOperation, ExplorationEvent, ExplorationJob,
 )
 from app.services import targets
+from app.services.exploration_prompts import (
+    DESCRIBE_METADATA, PROMPT_VERSION, PROPOSE_ENDPOINTS, SELECT_FROM_SPEC,
+)
 from app.services.llm import llm
 from app.services.llm_config import resolve as resolve_profile
-
-EXTRACT_SYSTEM = """\
-You explore an enterprise data source and propose callable operations an AI agent
-could expose. Return JSON:
-{"entities":[{"name":..,"fields":[..]}],
- "operations":[{"key":"area.verb","kind":"query|mutation","desc":".."}],
- "rules":[".."], "chains":[".."]}
-Keep it realistic and concise (3-6 operations)."""
-
-EXTRACT_SYSTEM_API = """\
-You are given the REAL endpoint catalogue of a live enterprise system.
-Select the 6-10 most valuable operations to expose to a governed AI agent.
-Rules:
-- ONLY use endpoints from the catalogue verbatim (copy method + path exactly).
-- Prefer business-level reads (lists, search, detail) and a few key writes.
-- Skip auth/login/health/metrics/static endpoints.
-Return COMPACT JSON (at most 4 entities with ≤6 fields each, ≤4 rules, ≤3 chains):
-{"entities":[{"name":..,"fields":[..]}],
- "operations":[{"key":"area.verb","desc":"..","method":"GET","path":"/api/.."}],
- "rules":["business rules you can infer"], "chains":["likely multi-step chains"]}
-Operation keys are short snake area.verb identifiers, e.g. "repo.search".
-desc must be ≤15 words."""
 
 
 async def _emit(db, job_id: uuid.UUID, event_type: str, payload: dict) -> None:
@@ -67,6 +48,51 @@ async def _emit(db, job_id: uuid.UUID, event_type: str, payload: dict) -> None:
     db.add(ExplorationEvent(job_id=job_id, seq=seq, event_type=event_type,
                             payload_json=payload, created_at=datetime.now(timezone.utc)))
     await db.flush()
+
+
+async def _discover_endpoints(db, job_id, source, cfg, prof) -> tuple[list[dict], str, str | None]:
+    """Automatic API-surface discovery for a live target. Returns
+    (endpoints, mode, spec_url). Preference order:
+      1. served OpenAPI/Swagger spec (authoritative)
+      2. LLM proposes endpoints → PROBED against the live system, keep only real
+      3. none → metadata-only extraction happens downstream
+    An admin-supplied catalogue (config.endpoints) is merged as an optional
+    override — it is NOT required; the framework adapts on its own.
+    """
+    endpoints: list[dict] = []
+    spec_url, spec = await targets.discover_spec(cfg)
+    if spec is not None:
+        endpoints = targets.summarize_endpoints(spec)
+        mode = "openapi"
+    else:
+        # no machine-readable spec → LLM proposes, then we verify against reality
+        p_args = (prof.model, PROPOSE_ENDPOINTS,
+                  f"System name: {source.name}\nKind: {source.type}\n"
+                  f"Connector: {source.connector_kind}\nConnection: {source.conn}\n"
+                  f"Base URL: {cfg.get('base_url')}")
+        proposed = []
+        for _try in range(2):
+            try:
+                proposal, _ = await llm.structured(*p_args, temperature=prof.temperature, max_tokens=3600)
+                proposed = targets.normalize_manual(proposal.get("endpoints") or [])
+                break
+            except Exception:  # noqa: BLE001 — proposal failure is not fatal
+                proposed = []
+        await _emit(db, job_id, "propose", {"proposed": len(proposed)})
+        await db.commit()
+        verified = await targets.validate_endpoints(cfg, proposed) if proposed else []
+        await _emit(db, job_id, "verify", {"proposed": len(proposed), "verified": len(verified)})
+        await db.commit()
+        endpoints = verified
+        mode = "probe-verified" if verified else "metadata"
+
+    # optional admin override / augmentation
+    manual = targets.normalize_manual(cfg.get("endpoints") or [])
+    seen = {(e["method"], e["path"]) for e in endpoints}
+    endpoints += [e for e in manual if (e["method"], e["path"]) not in seen]
+    if manual and mode == "metadata":
+        mode = "manual"
+    return endpoints, mode, spec_url
 
 
 async def run_exploration(job_id: uuid.UUID) -> None:
@@ -98,37 +124,35 @@ async def run_exploration(job_id: uuid.UUID) -> None:
                 return
             await db.commit()
 
-        # ---- phase 2: 深度探索 — real spec discovery ----
+        # ---- phase 2: 深度探索 — automatic API-surface discovery ----
+        # (served spec → else LLM-proposes-then-probe-verifies → else metadata)
         job.phase, job.progress = 2, 35
         await _emit(db, job_id, "phase", {"phase": 2, "label": "深度探索"})
         await db.commit()
+        prof = await resolve_profile(db, source.tenant_id, "pllm")
+        mode = "metadata"
         if is_live:
-            spec_url, spec = await targets.discover_spec(cfg)
-            if spec is not None:
-                endpoints = targets.summarize_endpoints(spec)
-            # admin-supplied catalogue (config_json.endpoints) is always honoured —
-            # the escape hatch for real systems that serve no machine-readable spec
-            manual = targets.normalize_manual(cfg.get("endpoints") or [])
-            seen = {(e["method"], e["path"]) for e in endpoints}
-            endpoints += [e for e in manual if (e["method"], e["path"]) not in seen]
-            mode = "openapi" if spec is not None else ("manual" if manual else "no-spec")
+            try:
+                endpoints, mode, spec_url = await _discover_endpoints(db, job_id, source, cfg, prof)
+            except Exception as exc:  # noqa: BLE001 — discovery failure is not fatal; go metadata-only
+                await _emit(db, job_id, "warn", {"stage": "discovery", "error": f"{type(exc).__name__}: {exc}"})
+                endpoints, mode = [], "metadata"
             await _emit(db, job_id, "spec", {
-                "spec_url": spec_url, "endpoints": len(endpoints), "manual": len(manual),
-                "mode": mode,
+                "spec_url": spec_url, "endpoints": len(endpoints), "mode": mode,
+                "prompt_version": PROMPT_VERSION,
             })
             await db.commit()
 
-        # ---- phase 3: 操作生成 — LLM over REAL endpoints (any failure must not leave job 'running') ----
+        # ---- phase 3: 操作生成 — LLM curates business ops (any failure must not leave job 'running') ----
         try:
-            prof = await resolve_profile(db, source.tenant_id, "pllm")
             if endpoints:
-                args = (prof.model, EXTRACT_SYSTEM_API,
+                args = (prof.model, SELECT_FROM_SPEC,
                         f"System: {source.name} ({source.conn})\n"
-                        f"Endpoint catalogue ({len(endpoints)} real endpoints):\n"
+                        f"Verified endpoint catalogue ({len(endpoints)} real endpoints):\n"
                         + targets.endpoint_digest(endpoints))
                 kw = {"temperature": prof.temperature, "max_tokens": 2800}
             else:
-                args = (prof.model, EXTRACT_SYSTEM,
+                args = (prof.model, DESCRIBE_METADATA,
                         f"Source type: {source.type}\nConnector: {source.connector_kind}\n"
                         f"Connection: {source.conn}\nName: {source.name}")
                 kw = {"temperature": prof.temperature, "max_tokens": 900}

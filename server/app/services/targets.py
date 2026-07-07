@@ -119,6 +119,54 @@ async def discover_spec(config: dict) -> tuple[str | None, dict | None]:
     return None, None
 
 
+async def validate_endpoints(config: dict, endpoints: list[dict],
+                             max_probes: int = 40) -> list[dict]:
+    """Ground LLM-proposed endpoints in the LIVE system.
+
+    A candidate is kept only if the real target confirms the route exists:
+      - GET/HEAD candidates are probed directly (fill path templates with a
+        harmless placeholder); anything that is not 404/501 and not an HTML
+        SPA-fallback is considered real (200/400/401/403/422 all prove the
+        route is handled).
+      - write candidates (POST/PUT/PATCH/DELETE) are NEVER called (that would
+        cause side effects); they are accepted only if a sibling collection
+        path is confirmed reachable, otherwise dropped.
+    Returns the surviving endpoints, each annotated with `verified` + `probe_status`.
+    """
+    reads = [e for e in endpoints if e["method"] in ("GET", "HEAD")]
+    writes = [e for e in endpoints if e["method"] not in ("GET", "HEAD")]
+    live_read_paths: set[str] = set()   # exact template paths confirmed to exist
+    out: list[dict] = []
+
+    async with client_for(config) as client:
+        for e in reads[:max_probes]:
+            probe_path = re.sub(r"\{[^{}]+\}", "1", e["path"])
+            try:
+                resp = await client.request("GET", probe_path,
+                                            params={k: 1 for k, v in e["params"].items()
+                                                    if v.get("in") == "query" and v.get("required")})
+            except httpx.HTTPError:
+                continue
+            ctype = resp.headers.get("content-type", "")
+            is_spa = "text/html" in ctype  # HTML = SPA catch-all, route not really an API
+            if resp.status_code in (404, 501) or is_spa:
+                continue
+            out.append({**e, "verified": True, "probe_status": resp.status_code})
+            live_read_paths.add(e["path"])
+
+    def _collection(path: str) -> str:
+        # item routes end in a param (/users/{id}); their collection is the parent
+        return path.rsplit("/", 1)[0] if path.endswith("}") else path
+
+    for e in writes:
+        # accept a write ONLY when the exact collection it targets is a confirmed
+        # live read route (e.g. POST /api/v1/users ↔ GET /api/v1/users). Never call
+        # the write itself — that would cause a side effect during discovery.
+        if e["path"] in live_read_paths or _collection(e["path"]) in live_read_paths:
+            out.append({**e, "verified": False, "probe_status": None})
+    return out
+
+
 def _param_entry(p: dict) -> dict:
     return {
         "in": p.get("in", "query"),

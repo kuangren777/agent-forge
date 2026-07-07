@@ -171,6 +171,39 @@ def test_truncate_caps_payload():
 # ---------- probe/discover against a mocked transport ----------
 
 @pytest.mark.asyncio
+async def test_validate_endpoints_keeps_real_drops_hallucinated(monkeypatch):
+    # live target: /api/v1/users exists (200), /api/v1/ghost is 404, SPA returns HTML 200
+    async def fake_request(self, method, path, **kw):
+        if path == "/api/v1/users":
+            return httpx.Response(200, json=[{"id": 1}])
+        if path == "/api/v1/spa":
+            return httpx.Response(200, text="<!doctype html>", headers={"content-type": "text/html"})
+        return httpx.Response(404)
+
+    class FakeClient:
+        def __init__(self, **kw): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        request = fake_request
+
+    monkeypatch.setattr(targets, "client_for", lambda cfg: FakeClient())
+    proposed = [
+        {"method": "GET", "path": "/api/v1/users", "summary": "real"},
+        {"method": "GET", "path": "/api/v1/ghost", "summary": "hallucinated"},
+        {"method": "GET", "path": "/api/v1/spa", "summary": "spa fallback"},
+        {"method": "POST", "path": "/api/v1/users", "summary": "create (sibling of real)"},
+        {"method": "POST", "path": "/api/v1/ghosts", "summary": "write with no live sibling"},
+    ]
+    kept = await targets.validate_endpoints({"base_url": "http://x"}, targets.normalize_manual(proposed))
+    paths = {(e["method"], e["path"]) for e in kept}
+    assert ("GET", "/api/v1/users") in paths          # real read kept
+    assert ("GET", "/api/v1/ghost") not in paths       # 404 dropped
+    assert ("GET", "/api/v1/spa") not in paths          # HTML SPA-fallback dropped
+    assert ("POST", "/api/v1/users") in paths           # write kept: sibling collection is live
+    assert ("POST", "/api/v1/ghosts") not in paths      # write dropped: no live sibling
+
+
+@pytest.mark.asyncio
 async def test_discover_spec_common_path(monkeypatch):
     async def fake_get(self, path, **kw):
         if path == "/openapi.json":
