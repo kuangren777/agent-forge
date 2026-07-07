@@ -71,13 +71,19 @@ async def _discover_endpoints(db, job_id, source, cfg, prof) -> tuple[list[dict]
                   f"Connector: {source.connector_kind}\nConnection: {source.conn}\n"
                   f"Base URL: {cfg.get('base_url')}")
         proposed = []
+        prop_err = None
         for _try in range(2):
             try:
                 proposal, _ = await llm.structured(*p_args, temperature=prof.temperature, max_tokens=3600)
                 proposed = targets.normalize_manual(proposal.get("endpoints") or [])
+                prop_err = None
                 break
-            except Exception:  # noqa: BLE001 — proposal failure is not fatal
+            except Exception as exc:  # noqa: BLE001 — proposal failure is not fatal
                 proposed = []
+                prop_err = f"{type(exc).__name__}: {exc}"
+        if prop_err:
+            await _emit(db, job_id, "warn", {"stage": "propose", "error": prop_err[:200]})
+            await db.commit()
         await _emit(db, job_id, "propose", {"proposed": len(proposed)})
         await db.commit()
         verified = await targets.validate_endpoints(cfg, proposed) if proposed else []

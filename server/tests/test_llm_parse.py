@@ -26,3 +26,12 @@ def test_leading_prose_before_object_trimmed():
 def test_genuinely_broken_json_raises():
     with pytest.raises(LLMError):
         _parse_json("not json at all, no braces")
+
+
+def test_salvage_structural_error_midway():
+    # model emitted an unescaped quote inside the 2nd element → salvage the 1st
+    bad = ('{"endpoints":[{"method":"GET","path":"/a"},'
+           '{"method":"GET","path":"/b","summary":"has "quote" here"},'
+           '{"method":"POST","path":"/c"}]}')
+    out = _parse_json(bad)
+    assert [e["path"] for e in out["endpoints"]] == ["/a"]
