@@ -6,8 +6,10 @@ import { useApprovals, useVote } from '../features/approvals';
 import { useLlmProfiles, useLlmModels, usePatchProfile } from '../features/llm';
 import { useState } from 'react';
 import type { ApprovalRequest, Operation } from '../api/types';
-
-const ROLE_LABEL: Record<string, string> = { pllm: 'P-LLM · 规划', qllm: 'Q-LLM · 解析' };
+import {
+  opTitle, kindLabel, confirmLabel, opStatusLabel, permLabel, riskLabel,
+  executorLabel, llmRoleLabel, approvalStatusLabel,
+} from '../lib/labels';
 
 function LlmSettingsPanel() {
   const { toast } = useApp();
@@ -23,7 +25,7 @@ function LlmSettingsPanel() {
   return (
     <div className="col gap8" style={{ marginTop: 16 }}>
       <div className="row vcenter between">
-        <span className="eyebrow">模型设置 · LLM profiles</span>
+        <span className="eyebrow">模型设置</span>
         <button className="btn sm" disabled={models.isFetching}
           onClick={() => setFetchModels(true)}>
           {models.isFetching ? '拉取中…' : '拉取可用模型'}
@@ -35,7 +37,7 @@ function LlmSettingsPanel() {
         const maxTok = e.max_tokens ?? p.max_tokens;
         return (
           <div key={p.role} className="card pad12 row vcenter gap10 wrap">
-            <span className="b sm" style={{ width: 92 }}>{ROLE_LABEL[p.role] ?? p.role}</span>
+            <span className="b sm" style={{ width: 92 }}>{llmRoleLabel(p.role)}</span>
             {opts.length ? (
               <select value={model} onChange={(ev) => setEdit({ ...edit, [p.role]: { ...e, model: ev.target.value } })}
                 style={selStyle}>
@@ -45,19 +47,19 @@ function LlmSettingsPanel() {
               <input value={model} onChange={(ev) => setEdit({ ...edit, [p.role]: { ...e, model: ev.target.value } })}
                 style={selStyle} />
             )}
-            <label className="row vcenter gap5 xs muted">max_tokens
+            <label className="row vcenter gap5 xs muted">回复长度上限
               <input type="number" value={maxTok} style={{ ...selStyle, width: 90 }}
                 onChange={(ev) => setEdit({ ...edit, [p.role]: { ...e, max_tokens: Number(ev.target.value) } })} />
             </label>
             <Btn sz="sm" k="go" ic="check" disabled={patch.isPending}
               onClick={() => patch.mutate({ role: p.role, body: { model, max_tokens: maxTok } },
-                { onSuccess: () => toast(`已更新 ${p.role} 模型为 ${model}`), onError: (er) => toast((er as Error).message, 'warn') })}>
+                { onSuccess: () => toast(`已更新${llmRoleLabel(p.role)}为 ${model}`), onError: (er) => toast((er as Error).message, 'warn') })}>
               保存
             </Btn>
           </div>
         );
       })}
-      {data && <span className="xs muted">网关：{data.base_url} · 改动即时生效，无需重启</span>}
+      {data && <span className="xs muted">改动即时生效，无需重启</span>}
     </div>
   );
 }
@@ -72,10 +74,10 @@ function ApprovalRow({ ar }: { ar: ApprovalRequest }) {
   const vote = useVote(ar.id);
   return (
     <div className="card pad12 row vcenter gap12">
-      <Tag k="write">{ar.confirm_level}</Tag>
+      <Tag k="write">{confirmLabel(ar.confirm_level)}</Tag>
       <div className="col fill">
-        <span className="b sm mono">{ar.target_id}</span>
-        <span className="xs muted">{ar.approve_votes}/{ar.required_votes} 批准 · {ar.status}</span>
+        <span className="b sm">{ar.target_type === 'operation' ? '操作上线审批' : '写操作审批'}</span>
+        <span className="xs muted">已批准 {ar.approve_votes}/{ar.required_votes} · {approvalStatusLabel(ar.status)}</span>
       </div>
       <Btn sz="sm" k="go" ic="check" disabled={vote.isPending || ar.status !== 'pending'}
         data-tour="ops-approve"
@@ -94,7 +96,7 @@ function ApprovalsPanel() {
   const items = data?.items ?? [];
   return (
     <div className="col gap8" style={{ marginTop: 16 }} data-tour="ops-approvals">
-      <span className="eyebrow">待人工审批 · dual approval（{items.length}）</span>
+      <span className="eyebrow">待人工审批（{items.length}）</span>
       {items.length === 0 && <span className="sm muted">暂无待审批请求。</span>}
       {items.map((ar) => <ApprovalRow key={ar.id} ar={ar} />)}
     </div>
@@ -122,7 +124,9 @@ export function OpsMain() {
 
   const visible = data.items
     .filter((o) => matchTree(o, treeSel))
-    .filter((o) => !query || o.op_key.toLowerCase().includes(query.toLowerCase()));
+    .filter((o) => !query
+      || opTitle(o).toLowerCase().includes(query.toLowerCase())
+      || o.op_key.toLowerCase().includes(query.toLowerCase()));
 
   const stColor = (s: string) => (s === 'active' ? 'var(--cap-trusted)' : s === 'disabled' ? 'var(--ink-4)' : 'var(--cap-write)');
 
@@ -130,7 +134,7 @@ export function OpsMain() {
     <div className="pad16 fill scroll">
       {readonly && (
         <div className="row vcenter gap6 sm muted" style={{ marginBottom: 10 }}>
-          <Icon n="eye" s={14} c="var(--ink-3)" />{role} 视角 · 只显示你可调用的操作 · 审核为只读
+          <Icon n="eye" s={14} c="var(--ink-3)" />当前身份 · 只显示你可调用的操作 · 审核为只读
         </div>
       )}
       <div className="card" style={{ overflow: 'hidden' }} data-tour="ops-table">
@@ -146,14 +150,19 @@ export function OpsMain() {
             )}
             {visible.map((o) => (
               <tr key={o.id} className={o.id === opsSel ? 'sel' : ''} onClick={() => setOpsSel(o.id)}>
-                <td className="mono b" style={{ color: 'var(--ink)' }}>{o.op_key}</td>
-                <td><Tag k={o.kind === 'mutation' ? 'm' : 'q'}>{o.kind}</Tag></td>
-                <td className="mono">{o.perm}</td>
+                <td className="b" style={{ color: 'var(--ink)' }}>
+                  <div className="col" style={{ gap: 1 }}>
+                    <span>{opTitle(o)}</span>
+                    <span className="xs muted mono" style={{ fontWeight: 400 }}>{o.op_key}</span>
+                  </div>
+                </td>
+                <td><Tag k={o.kind === 'mutation' ? 'm' : 'q'}>{kindLabel(o.kind)}</Tag></td>
+                <td>{permLabel(o.perm)}</td>
                 <td>{o.confirm_level === 'dual'
-                  ? <span style={{ color: 'var(--danger)' }} className="b">dual_approval</span> : o.confirm_level}</td>
+                  ? <span style={{ color: 'var(--danger)' }} className="b">需双人审批</span> : confirmLabel(o.confirm_level)}</td>
                 <td><span className="row vcenter gap5">
                   <Dot k={o.status === 'active' ? 'ok' : o.status === 'disabled' ? 'off' : 'wait'} />
-                  <span style={{ color: stColor(o.status) }}>{o.status}</span>
+                  <span style={{ color: stColor(o.status) }}>{opStatusLabel(o.status)}</span>
                 </span></td>
                 <td><Icon n="chevron" s={15} c="var(--ink-4)" /></td>
               </tr>
@@ -163,10 +172,10 @@ export function OpsMain() {
       </div>
       {role === 'admin' && (
         <div className="col gap8" style={{ marginTop: 14 }}>
-          <span className="eyebrow">可插拔后端 · 高扩展性</span>
+          <span className="eyebrow">可扩展的后端能力</span>
           <div className="row gap8 wrap">
-            <Chip ic="puzzle">Policy: Python · OPA · Casbin</Chip>
-            <Chip ic="bolt">Executor: API · Function · SQL · RPA</Chip>
+            <Chip ic="puzzle">策略引擎 · 可按需接入</Chip>
+            <Chip ic="bolt">执行方式 · 接口 / 数据库 / 流程</Chip>
           </div>
           <ApprovalsPanel />
           <LlmSettingsPanel />
@@ -190,55 +199,55 @@ export function OpsAside() {
   return (
     <div className="col pad14 fill gap10 scroll">
       <div className="row between vcenter">
-        <span className="h3 mono">{o.op_key}</span>
-        <Tag k={isM ? 'm' : 'q'}>{o.kind}</Tag>
+        <div className="col" style={{ gap: 1, minWidth: 0 }}>
+          <span className="h3">{opTitle(o)}</span>
+          <span className="xs muted mono">{o.op_key}</span>
+        </div>
+        <Tag k={isM ? 'm' : 'q'}>{kindLabel(o.kind)}</Tag>
       </div>
       {([
-        ['语义', isM ? '执行一次写操作' : '查询数据'],
-        ['版本', `v${o.version}`],
-        ['权限', o.perm],
-        ['确认级别', o.confirm_level],
-        ['风险', o.risk_level],
-        ['执行器', o.executor_binding ?? '-'],
+        ['说明', isM ? '执行一次写操作（会改动数据）' : '查询数据（不改动）'],
+        ['版本', `第 ${o.version} 版`],
+        ['权限', permLabel(o.perm)],
+        ['确认级别', confirmLabel(o.confirm_level)],
+        ['风险', riskLabel(o.risk_level)],
+        ['执行方式', executorLabel(o.executor_binding)],
       ] as [string, string][]).map(([k, v], i) => (
         <div key={i} className="row gap8 sm">
-          <span className="muted" style={{ width: 52, flex: '0 0 auto' }}>{k}</span>
+          <span className="muted" style={{ width: 60, flex: '0 0 auto' }}>{k}</span>
           <span className="muted2">{v}</span>
         </div>
       ))}
       <div className="divln" />
       <div className="row between vcenter">
-        <span className="eyebrow">关联策略 policy</span>
-        <Chip ic="puzzle">PythonPolicyEngine</Chip>
+        <span className="eyebrow">安全策略</span>
+        <Chip ic="puzzle">策略引擎</Chip>
       </div>
-      <div className="code">
-        {'def '}<span className="f">{o.policy_ref ?? 'policy'}</span>{'(id, op, kw):\n  '}
-        <span className="k">if</span>{' src ⊄ trusted:\n    '}<span className="k">return</span>{' Denied(...)'}
-      </div>
+      <Note>执行前自动校验：当数据来源不可信时，系统会拒绝执行，保障操作安全。</Note>
       {role === 'admin' ? (
         o.status === 'pending' ? (
           <div className="row gap8" style={{ marginTop: 2 }}>
             <Btn sz="sm" k="go" ic="check" disabled={publish.isPending}
-              onClick={() => publish.mutate(o.id, { onSuccess: () => toast(`已批准 ${o.op_key}`) })}>批准激活</Btn>
+              onClick={() => publish.mutate(o.id, { onSuccess: () => toast(`已上线「${opTitle(o)}」`) })}>批准上线</Btn>
             <Btn sz="sm" k="ghost" disabled={disable.isPending}
-              onClick={() => disable.mutate(o.id, { onSuccess: () => toast(`已禁用 ${o.op_key}`, 'warn') })}>禁用</Btn>
+              onClick={() => disable.mutate(o.id, { onSuccess: () => toast(`已停用「${opTitle(o)}」`, 'warn') })}>停用</Btn>
           </div>
         ) : o.status === 'active' ? (
           <div className="row vcenter gap6 sm" style={{ color: 'var(--cap-trusted)', marginTop: 2 }}>
-            <Icon n="check" s={14} c="var(--cap-trusted)" />已激活
+            <Icon n="check" s={14} c="var(--cap-trusted)" />已上线
             <Btn sz="sm" k="ghost" disabled={disable.isPending}
-              onClick={() => disable.mutate(o.id, { onSuccess: () => toast(`已禁用 ${o.op_key}`, 'warn') })}>禁用</Btn>
+              onClick={() => disable.mutate(o.id, { onSuccess: () => toast(`已停用「${opTitle(o)}」`, 'warn') })}>停用</Btn>
           </div>
         ) : (
           <Btn sz="sm" k="go" ic="check" disabled={publish.isPending}
-            onClick={() => publish.mutate(o.id, { onSuccess: () => toast(`已重新激活 ${o.op_key}`) })}>重新激活</Btn>
+            onClick={() => publish.mutate(o.id, { onSuccess: () => toast(`已重新上线「${opTitle(o)}」`) })}>重新上线</Btn>
         )
       ) : (
         <div className="row vcenter gap6 sm muted" style={{ marginTop: 2 }}>
           <Icon n="eye" s={14} c="var(--ink-3)" />只读 · 审核需管理员
         </div>
       )}
-      <Note>读操作自动激活，写操作需管理员审核后上线。</Note>
+      <Note>读操作自动上线，写操作需管理员审核后上线。</Note>
     </div>
   );
 }

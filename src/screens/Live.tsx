@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Icon, Tag, Dot, Note, Btn } from '../components/kit';
 import { useApp } from '../lib/appContext';
 import { useMe } from '../features/auth';
 import { useSources, useStartExplore, useJob, useExplorationStream } from '../features/sources';
+import { streamLabel, kindLabel, explorerLabel, OP_KEY_LABEL } from '../lib/labels';
 
 const PHASES = ['全局认知', '深度探索', '操作生成', '能力标注'];
 
@@ -14,18 +15,23 @@ export function LiveMain() {
   const start = useStartExplore();
   const qc = useQueryClient();
 
-  // Auto-attach to the most recently started job (written by Explore's useStartExplore onSuccess)
-  const latestJobId = qc.getQueryData<string>(['job-latest']);
-  const [jobId, setJobId] = useState<string | undefined>(latestJobId ?? undefined);
+  // Auto-attach to the most recently started job (written by Explore's
+  // useStartExplore onSuccess). Subscribe via useQuery so a job started
+  // *after* this screen mounts still attaches (cache reads are one-shot).
+  const latestJob = useQuery<string | undefined>({
+    queryKey: ['job-latest'],
+    queryFn: () => undefined,
+    enabled: false,
+  });
+  const [jobId, setJobId] = useState<string | undefined>(latestJob.data ?? undefined);
   const job = useJob(jobId);
   const events = useExplorationStream(jobId);
   const logRef = useRef<HTMLDivElement>(null);
 
   // Keep job-latest in sync
   useEffect(() => {
-    const id = qc.getQueryData<string>(['job-latest']);
-    if (id && !jobId) setJobId(id);
-  }, [qc, jobId]);
+    if (latestJob.data && !jobId) setJobId(latestJob.data);
+  }, [latestJob.data, jobId]);
 
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [events]);
 
@@ -60,7 +66,7 @@ export function LiveMain() {
   return (
     <div className="col gap14 fill scroll" style={{ padding: 16 }}>
       <div className="row between vcenter">
-        <span className="sm muted">{src ? `${src.connector_kind} · ${src.conn}` : '无数据源'}</span>
+        <span className="sm muted">{src ? `${explorerLabel(src.connector_kind)} · ${src.conn}` : '无数据源'}</span>
         <div className="row vcenter gap10">
           {jobId && <><span className="sm muted tnum">{progress}%</span>
             <div className="prog" style={{ width: 140 }}><i style={{ width: `${progress}%` }} /></div></>}
@@ -94,29 +100,29 @@ export function LiveMain() {
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTreeSel(isHighlighted ? 0 : phaseNum); } }}
               >
                 <Dot k={st === 'done' ? 'ok' : st === 'now' ? 'wait' : 'off'} />
-                <span className="b">Phase {phaseNum}</span><span className="fill">{label}</span>
+                <span className="b">阶段 {phaseNum}</span><span className="fill">{label}</span>
                 {st === 'done' && <Icon n="check" s={13} c="var(--cap-trusted)" />}
-                {st === 'now' && <span className="xs mono" style={{ color: 'var(--accent)' }}>running</span>}
+                {st === 'now' && <span className="xs" style={{ color: 'var(--accent)' }}>进行中</span>}
               </div>
             );
           })}
         </div>
         <div className="card col fill gap8" style={{ padding: 14, minWidth: 280 }}>
           <div className="row between vcenter">
-            <span className="eyebrow">实时日志 · stream</span>
-            {jobId && job.data?.status !== 'done' && <span className="row vcenter gap5 xs muted"><Dot k="wait" /> live</span>}
+            <span className="eyebrow">实时日志</span>
+            {jobId && job.data?.status !== 'done' && <span className="row vcenter gap5 xs muted"><Dot k="wait" /> 进行中</span>}
           </div>
           <div ref={logRef} className="code" style={{ maxHeight: 320, minHeight: 120 }} data-tour="live-log">
-            {!jobId && <span className="c">{'// 点击「开始探索」启动 LLM 驱动的真实探索'}</span>}
+            {!jobId && <span className="c">{'// 点击「开始探索」，系统会自动读取数据源并发现可用操作'}</span>}
             {events
               .filter((e) => activePhase == null || e.type !== 'phase' || (e.payload.phase as number) === activePhase)
               .map((e, i) => (
                 <div key={i}>
-                  <span className="c">{`[${e.type}] `}</span>
-                  <span>{e.type === 'op' ? `+ op ${e.payload.key} (${e.payload.kind})`
-                    : e.type === 'phase' ? `phase ${e.payload.phase} · ${e.payload.label}`
-                    : e.type === 'rule' ? `rule ${e.payload.text}`
-                    : e.type === 'done' ? `done · ${e.payload.operations} operations`
+                  <span className="c">{`[${streamLabel(e.type)}] `}</span>
+                  <span>{e.type === 'op' ? `${OP_KEY_LABEL[String(e.payload.key)] ?? e.payload.key}（${kindLabel(String(e.payload.kind))}）`
+                    : e.type === 'phase' ? `阶段 ${e.payload.phase} · ${e.payload.label}`
+                    : e.type === 'rule' ? `${e.payload.text}`
+                    : e.type === 'done' ? `共发现 ${e.payload.operations} 个操作`
                     : JSON.stringify(e.payload)}</span>
                 </div>
               ))}
@@ -137,7 +143,7 @@ export function LiveAside() {
         <div className="row between"><span className="sm muted">数据源</span><span className="b tnum">{sources.data?.items.length ?? 0}</span></div>
         <div className="row between"><span className="sm muted">探索中</span><Tag k="parsed">{running}</Tag></div>
         <div className="divln" />
-        <Note ink>探索由 P-LLM 真实驱动：读取连接信息→抽取候选操作→写入注册表（写操作待审核）。</Note>
+        <Note ink>系统会自动读取数据源、发现可用操作并登记到操作清单（写操作需审核后启用）。</Note>
       </div>
     </div>
   );

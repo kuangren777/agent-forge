@@ -6,6 +6,7 @@ import {
 } from '../features/chat';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Plan } from '../api/types';
+import { confirmLabel, capLabel, OP_KEY_LABEL, stepKindLabel } from '../lib/labels';
 
 const capDot = (c: string) => (c === 'query' ? 'data' : c === 'parse' ? 'parsed' : 'write');
 
@@ -13,15 +14,15 @@ function PlanCard({ plan }: { plan: Plan }) {
   return (
     <div className="card pad12 col gap8" data-tour="plan-card">
       <div className="row between vcenter">
-        <span className="eyebrow">执行计划 · {plan.required_confirm_level}</span>
-        <Tag k="m">{plan.writes} 写操作</Tag>
+        <span className="eyebrow">执行计划 · {confirmLabel(plan.required_confirm_level)}</span>
+        <Tag k="m">{plan.writes} 项写操作</Tag>
       </div>
       {plan.steps.map((s) => (
         <div key={s.step_no} className="row vcenter gap8" style={{ fontSize: 12 }}>
           <span className="mono muted xs" style={{ width: 14 }}>{s.step_no}</span>
           <Dot k={capDot(s.kind)} />
           <span className="fill muted2">{s.label}</span>
-          {s.kind === 'write' && <Tag k="write">mutation</Tag>}
+          {s.kind === 'write' && <Tag k="write">写操作</Tag>}
         </div>
       ))}
       {plan.reasoning_summary && (
@@ -83,7 +84,7 @@ export function ChatMain() {
         {items.length === 0 && !messages.isLoading && (
           <div className="col center fill gap8 muted sm">
             <Icon n="chat" s={28} c="var(--ink-4)" />
-            用自然语言下达指令，P-LLM 会生成可审计的执行计划。
+            用自然语言下达指令，系统会生成可审计的执行计划。
           </div>
         )}
         {items.map((m) => (
@@ -116,7 +117,7 @@ export function ChatMain() {
           <Icon n="chat" s={15} c="var(--ink-4)" />
           <input value={draft} onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') doSend(); }}
-            placeholder={send.isPending ? 'P-LLM 规划中…' : '继续输入指令…'} aria-label="对话输入" disabled={send.isPending}
+            placeholder={send.isPending ? '正在规划…' : '继续输入指令…'} aria-label="对话输入" disabled={send.isPending}
             data-tour="chat-input" />
           <button className="btn pri sm" onClick={doSend} disabled={!draft.trim() || send.isPending}
             aria-label="发送" style={{ height: 28 }} data-tour="chat-send">
@@ -141,33 +142,33 @@ export function ChatAside() {
   return (
     <div className="col fill">
       <div className="pad14 row between vcenter" style={{ borderBottom: '1px solid var(--line-2)' }}>
-        <span className="h3">P-LLM 计划详情</span>
+        <span className="h3">执行计划详情</span>
         <Tag k="q">只读</Tag>
       </div>
       <div className="pad14 col gap10 fill scroll">
-        {!latestPlan && <span className="muted sm">发送指令后，这里显示 P-LLM 生成的结构化计划与能力标注。</span>}
+        {!latestPlan && <span className="muted sm">发送指令后，这里会显示系统生成的执行计划与数据说明。</span>}
         {latestPlan && (
           <>
-            <span className="eyebrow">意图 intent</span>
+            <span className="eyebrow">意图</span>
             <span className="sm muted2">{latestPlan.intent}</span>
             <div className="divln" />
-            <span className="eyebrow">步骤能力 capabilities</span>
+            <span className="eyebrow">步骤与数据</span>
             {latestPlan.steps.map((s) => (
               <div key={s.step_no} className="row vcenter gap8 sm muted2">
                 <Dot k={capDot(s.kind)} />
                 <span className="mono xs" style={{ width: 14 }}>{s.step_no}</span>
-                <span className="fill">{s.op_key ?? s.kind}</span>
-                <Tag k={s.capability_out}>{s.capability_out}</Tag>
+                <span className="fill">{s.op_key ? (OP_KEY_LABEL[s.op_key] ?? s.op_key) : stepKindLabel(s.kind)}</span>
+                <Tag k={s.capability_out}>{capLabel(s.capability_out)}</Tag>
               </div>
             ))}
             {latestPlan.policy_hints.length > 0 && (
               <>
                 <div className="divln" />
-                <span className="eyebrow">策略提示 policy</span>
+                <span className="eyebrow">策略提示</span>
                 {latestPlan.policy_hints.map((h, i) => <span key={i} className="xs muted">· {h}</span>)}
               </>
             )}
-            <Note>P-LLM 只产出结构化计划，看不到具体数据；写操作经策略与人审后才执行。</Note>
+            <Note>系统只生成执行计划，看不到具体数据；写操作需经策略校验与人工确认后才执行。</Note>
           </>
         )}
       </div>

@@ -204,7 +204,7 @@ function ShellInner() {
               <span className="sm muted">{s.sub}</span>
             </div>
             <div className="row vcenter gap8">
-              {active === 'chat' && <Chip ic="shield">CaMeL 已启用</Chip>}
+              {active === 'chat' && <Chip ic="shield">安全护栏已启用</Chip>}
               <Chip>{ROLES.find(([k]) => k === role)?.[1] ?? role}</Chip>
             </div>
           </div>

@@ -3,12 +3,13 @@ import { Dot, Note, Sw } from '../components/kit';
 import { useApp } from '../lib/appContext';
 import { useTraces, useTraceFlow } from '../features/traces';
 import type { CapKind } from '../api/types';
+import { flowNodeLabel, nodeSourceLabel } from '../lib/labels';
 
 const LEGEND: Array<[CapKind, string]> = [
-  ['trusted', '可信 · user 直接输入'],
-  ['data', '内部数据 · 库直读'],
-  ['parsed', '解析结果 · Q-LLM'],
-  ['write', '写操作 · 副作用'],
+  ['trusted', '可信输入 · 你直接提供'],
+  ['data', '内部数据 · 系统读取'],
+  ['parsed', '解析结果 · AI 提取'],
+  ['write', '写操作 · 会改动数据'],
 ];
 
 function useActiveTrace() {
@@ -35,7 +36,7 @@ export function FlowMain() {
           <div key={node.node_id} className="col center">
             <button className={`node ${node.cap} ${i === flowSel ? 'sel' : ''}`}
               style={{ width: 340, justifyContent: 'space-between' }} onClick={() => setFlowSel(i)}>
-              <span className="mono" style={{ fontSize: 11 }}>{node.label}</span>
+              <span style={{ fontSize: 11.5 }}>{flowNodeLabel(node.label)}</span>
               <Dot k={node.cap} />
             </button>
             {i < data.nodes.length - 1 && <div className="edge flow" style={{ height: 26 }} />}
@@ -55,30 +56,30 @@ export function FlowAside() {
   return (
     <div className="col fill">
       <div className="pad14" style={{ borderBottom: '1px solid var(--line-2)' }}>
-        <span className="h3">节点详情 · node</span>
+        <span className="h3">节点详情</span>
       </div>
       <div className="col gap12 pad14 fill scroll">
         {!n && <span className="muted sm">选择一个节点查看详情。</span>}
         {n && (
           <>
             <div className={`node ${n.cap}`} style={{ alignSelf: 'flex-start', cursor: 'default' }}>
-              <span className="mono">{n.node_id}</span><Dot k={n.cap} />
+              <span>{flowNodeLabel(n.label)}</span><Dot k={n.cap} />
             </div>
             <div className="col gap6">
-              {([['source', n.source], ['readers', n.readers], ['via', n.via]] as [string, string][]).map(([k, v]) => (
+              {([['来源', nodeSourceLabel(n.source)], ['可见角色', n.readers], ['经由', flowNodeLabel(n.via)]] as [string, string][]).map(([k, v]) => (
                 <div key={k} className="row between sm">
                   <span className="muted">{k}</span>
-                  <span className="mono muted2" style={{ textAlign: 'right' }}>{v || '-'}</span>
+                  <span className="muted2" style={{ textAlign: 'right' }}>{v || '-'}</span>
                 </div>
               ))}
             </div>
             <div className="divln" />
-            <span className="eyebrow">能力图例 capabilities</span>
+            <span className="eyebrow">能力图例</span>
             <div className="col gap6">
               {LEGEND.map(([k, l]) => <Sw key={k} c={`var(--cap-${k})`}>{l}</Sw>)}
             </div>
             <div className="divln" />
-            <Note>Q-LLM 输出继承输入能力，防止数据被「洗白」成可信。</Note>
+            <Note>解析结果会保留原始数据的可信级别，防止被误当成可信输入。</Note>
           </>
         )}
       </div>

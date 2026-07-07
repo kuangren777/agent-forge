@@ -3,6 +3,7 @@ import { Tag, Dot, Btn, Icon } from '../components/kit';
 import { useApp } from '../lib/appContext';
 import { useMe } from '../features/auth';
 import { useTraces, useTraceAudit, useExecutions, useRollback } from '../features/traces';
+import { eventLabel, opTitle, executorLabel, execStatusLabel, auditPayloadSummary } from '../lib/labels';
 
 function useActiveTrace() {
   const { traceSel, setTraceSel } = useApp();
@@ -24,8 +25,8 @@ export function AuditMain() {
   return (
     <div className="pad16 fill scroll" data-tour="audit-chain">
       <div className="row vcenter gap8" style={{ marginBottom: 12 }}>
-        <Tag k={v.valid ? 'trusted' : 'write'}>{v.valid ? 'hash 链完整性已验证' : '链已被篡改'}</Tag>
-        <span className="xs muted tnum">{v.count} 事件 · head {v.head?.slice(0, 10)}…</span>
+        <Tag k={v.valid ? 'trusted' : 'write'}>{v.valid ? '✓ 完整性已验证' : '记录已被篡改'}</Tag>
+        <span className="xs muted tnum">{v.count} 条记录 · 环环相扣不可改</span>
       </div>
       <div className="card pad16">
         <div className="col">
@@ -37,12 +38,12 @@ export function AuditMain() {
               </div>
               <div className="col gap2" style={{ paddingBottom: 12 }}>
                 <div className="row vcenter gap8">
-                  <span className="mono b xs" style={{ color: 'var(--ink)' }}>{ev.event}</span>
-                  {ev.event === 'OPERATION_EXECUTED' && <Tag k="write">mutation</Tag>}
+                  <span className="b xs" style={{ color: 'var(--ink)' }}>{eventLabel(ev.event)}</span>
+                  {ev.event === 'OPERATION_EXECUTED' && <Tag k="write">写操作</Tag>}
                 </div>
-                <span className="xs muted">{JSON.stringify(ev.payload)}</span>
+                {auditPayloadSummary(ev.payload) && <span className="xs muted">{auditPayloadSummary(ev.payload)}</span>}
                 <span className="xs mono" style={{ color: 'var(--ink-4)' }}>
-                  hash {ev.hash.slice(0, 8)}… ← prev {ev.prev_hash.slice(0, 8)}…
+                  校验码 {ev.hash.slice(0, 8)}… · 承接上一环 {ev.prev_hash.slice(0, 8)}…
                 </span>
               </div>
             </div>
@@ -64,25 +65,25 @@ export function AuditAside() {
   return (
     <div className="col fill">
       <div className="pad14" style={{ borderBottom: '1px solid var(--line-2)' }}>
-        <span className="h3">{ex ? ex.op_key : '执行详情'}</span>
+        <span className="h3">{ex ? opTitle(ex) : '执行详情'}</span>
       </div>
       <div className="col gap10 pad14 fill scroll">
-        {!ex && <span className="muted sm">该 trace 暂无执行记录。</span>}
+        {!ex && <span className="muted sm">这条记录暂无执行明细。</span>}
         {ex && (
           <>
-            <span className="eyebrow">before → after</span>
+            <span className="eyebrow">执行前 → 执行后</span>
             <div className="code">{JSON.stringify(ex.before, null, 1)}{'\n→\n'}{JSON.stringify(ex.after, null, 1)}</div>
             <div className="divln" />
-            <div className="row between sm"><span className="muted">executor</span><span className="mono muted2">{ex.executor}</span></div>
+            <div className="row between sm"><span className="muted">执行方式</span><span className="muted2">{executorLabel(ex.executor)}</span></div>
             <div className="row between sm"><span className="muted">耗时</span><span className="mono muted2">{ex.latency_ms}ms</span></div>
-            <div className="row between sm"><span className="muted">状态</span><span className="mono muted2">{ex.status}</span></div>
+            <div className="row between sm"><span className="muted">状态</span><span className="muted2">{execStatusLabel(ex.status)}</span></div>
             {canRollback && ex.status !== 'rolled_back' && (
               <Btn sz="sm" k="warn" ic="refresh" style={{ marginTop: 4 }} disabled={rollback.isPending}
                 data-tour="audit-rollback"
                 onClick={() => rollback.mutate(ex.id, {
-                  onSuccess: () => toast('已回滚 · 已记录补偿事件', 'warn'),
+                  onSuccess: () => toast('已回滚 · 已记录补偿操作', 'warn'),
                   onError: (e) => toast((e as Error).message, 'warn'),
-                })}>回滚此操作 rollback</Btn>
+                })}>回滚此操作</Btn>
             )}
             {ex.status === 'rolled_back' && (
               <div className="row vcenter gap6 sm muted"><Icon n="check" s={13} />已回滚</div>

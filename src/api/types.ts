@@ -25,6 +25,11 @@ export interface Operation {
   roles: Role[];
   perm: string;
   scopes: Record<string, string>;
+  // Business-language fields the server now returns (see server/app/api/registry.py::_serialize_with)
+  source_id?: string | null;
+  source_name?: string | null;
+  desc?: string;
+  call?: string | null;
 }
 export interface OperationList { items: Operation[]; pending_count: number; total: number }
 

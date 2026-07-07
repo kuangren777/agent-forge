@@ -3,6 +3,7 @@ import { useApp } from '../lib/appContext';
 import { useMe } from '../features/auth';
 import { useSources, useStartExplore } from '../features/sources';
 import { useQueryClient } from '@tanstack/react-query';
+import { explorerLabel, srcStatusLabel } from '../lib/labels';
 
 const iconBox: React.CSSProperties = {
   width: 34, height: 34, borderRadius: 8, background: 'var(--fill)',
@@ -40,7 +41,7 @@ export function ExploreMain() {
             </div>
             <div className="row vcenter gap6 sm muted2">
               <Dot k={s.status === 'connected' ? 'ok' : s.status === 'running' ? 'wait' : 'off'} />
-              {s.status}
+              {srcStatusLabel(s.status)}
             </div>
             <Icon n="chevron" s={16} c="var(--ink-4)" />
           </div>
@@ -50,10 +51,10 @@ export function ExploreMain() {
         <div className="card row vcenter gap12" style={{ padding: 12, borderStyle: 'dashed', background: 'var(--fill-2)' }}>
           <span style={{ ...iconBox, background: 'var(--accent-soft)' }}><Icon n="puzzle" s={18} c="var(--accent-ink)" /></span>
           <div className="col fill">
-            <span className="b sm">接入新探索器 Explorer 插件</span>
-            <span className="xs muted">实现 Explorer 接口即可挂载任意数据源</span>
+            <span className="b sm">接入新的数据源</span>
+            <span className="xs muted">按标准方式接入，即可挂载任意企业系统</span>
           </div>
-          <Btn sz="sm" ic="plus" onClick={() => toast('打开插件市场（演示）', 'info')}>添加</Btn>
+          <Btn sz="sm" ic="plus" onClick={() => toast('打开数据源接入向导（演示）', 'info')}>添加</Btn>
         </div>
       )}
     </div>
@@ -75,12 +76,12 @@ export function ExploreAside() {
   return (
     <div className="col fill">
       <div className="row between vcenter" style={{ padding: '12px 14px', borderBottom: '1px solid var(--line-2)' }}>
-        <span className="h3 mono">{src.connector_kind}</span>
-        <Tag k={src.status === 'connected' ? 'trusted' : 'parsed'}>{src.status}</Tag>
+        <span className="h3">{explorerLabel(src.connector_kind)}</span>
+        <Tag k={src.status === 'connected' ? 'trusted' : 'parsed'}>{srcStatusLabel(src.status)}</Tag>
       </div>
       <div className="col gap12 fill scroll" style={{ padding: 14 }}>
         <div className="col gap6">
-          <span className="eyebrow">连接 Connector</span>
+          <span className="eyebrow">连接信息</span>
           <div className="field" style={{ gap: 0 }}><span className="mono xs" style={{ color: 'var(--ink-2)' }}>{src.conn}</span></div>
         </div>
         {role === 'admin' && (
@@ -95,12 +96,8 @@ export function ExploreAside() {
             })}>开始探索</Btn>
         )}
         <div className="divln" />
-        <span className="eyebrow">实现接口 implements</span>
-        <div className="code">
-          {'class Explorer(ABC):\n  async def '}<span className="f">explore</span>
-          {'(self,\n    src) -> list['}<span className="v">OperationDraft</span>{']'}
-        </div>
-        <Note>探索产物会写入操作注册表（读操作自动上线，写操作待审核）。</Note>
+        <span className="eyebrow">工作方式</span>
+        <Note>系统会自动读取该数据源，发现其中可用的操作，并登记到操作清单（读操作自动上线，写操作待审核）。</Note>
       </div>
     </div>
   );
