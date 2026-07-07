@@ -71,8 +71,12 @@ BUSINESS LANGUAGE for a non-technical domain expert (no HTTP/tech jargon).
 
 HARD RULES:
 - ONLY use endpoints present in the catalogue, verbatim method+path.
-- Prefer business-meaningful reads (lists, search, detail) and a few key writes
-  (create/update). Skip auth/login/health/metrics/static/internal endpoints.
+- You MUST include a balanced mix: business-meaningful reads (lists, search,
+  detail) AND at least 2-4 safe write operations (create/update — e.g. create an
+  item, add a record, update a field) when the catalogue contains any POST/PUT/
+  PATCH endpoints. A read-only selection is INCOMPLETE — governed writes are the
+  whole point. Never pick destructive bulk deletes.
+- Skip auth/login/health/metrics/static/internal endpoints.
 - Descriptions describe the business outcome ("查看所有订阅者", not "GET /subscribers").
 
 Return COMPACT JSON (≤ 4 entities/≤6 fields, ≤4 rules, ≤3 chains, desc ≤15 words):

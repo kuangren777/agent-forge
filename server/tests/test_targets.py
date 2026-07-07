@@ -289,3 +289,12 @@ def test_function_executor_unknown_op_is_not_fake_success():
     # unknown read op → error envelope, not empty "no data"
     rows = asyncio.run(fx.read(None, None, "row.query", {}))
     assert rows == [{"error": "not_connected"}]
+
+
+def test_looks_like_write_intent():
+    from app.api.chat import _looks_like_write
+    assert _looks_like_write("帮我新建一个工单")
+    assert _looks_like_write("把状态改成已完成")
+    assert _looks_like_write("create a new repo")
+    assert not _looks_like_write("列出所有的仓库")
+    assert not _looks_like_write("有哪些用户")

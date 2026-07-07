@@ -334,6 +334,7 @@ async def _execute_plan(db: AsyncSession, plan: ExecutionPlan, trace: Trace, ste
     rows: list[dict] = []        # accumulated query data (capability: data)
     selected: list[str] = []     # Q-LLM parsed selection (capability: parsed)
     step_rows: dict[int, list[dict]] = {}   # per-step query output, for $stepN refs
+    query_errors: list[str] = []            # error codes from failed reads (for honest replies)
 
     for st in steps:
         if st.kind == "query" and st.op_key:
@@ -346,6 +347,8 @@ async def _execute_plan(db: AsyncSession, plan: ExecutionPlan, trace: Trace, ste
             real = [] if err else fetched
             rows.extend(real)
             step_rows[st.step_no] = real
+            if err:
+                query_errors.append(err)
             st.status = "error" if err else "done"
             await audit.append_event(db, plan.trace_id, "DATA_READ",
                                      {"op": st.op_key, "rows": len(real),
@@ -398,4 +401,4 @@ async def _execute_plan(db: AsyncSession, plan: ExecutionPlan, trace: Trace, ste
         else:
             st.status = "done"
 
-    return {"rows": rows, "selected": selected}
+    return {"rows": rows, "selected": selected, "query_errors": query_errors}

@@ -12,6 +12,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents import orchestrator
 from app.db import get_db
 from app.deps import Principal, get_principal
+from app.models.chat import PlanStep
+
+# write-intent verbs — a request naming one of these expects a create/change
+_WRITE_INTENT = ("新建", "创建", "建一个", "建个", "添加", "新增", "增加", "修改", "更新",
+                 "改成", "删除", "移除", "发送", "发布", "开通", "创建一个", "录入", "登记",
+                 "create", "add", "update", "delete", "send", "publish", "new ")
+
+
+def _looks_like_write(text: str) -> bool:
+    t = text.lower()
+    return any(w in text or w in t for w in _WRITE_INTENT)
 from app.models.chat import ChatMessage, ChatSession, ExecutionPlan, PlanStep
 
 router = APIRouter(tags=["chat"])
@@ -120,11 +131,11 @@ def _result_reply(plan) -> str:
         return f"已完成：{plan.intent}"
     rows = ctx.get("rows") or []
     steps = ctx.get("steps") or []
+    errors = ctx.get("query_errors") or []
     lines: list[str] = []
     queries = [s for s in steps if s["kind"] == "query"]
     writes = [s for s in steps if s["kind"] == "write"]
     if queries:
-        errors = [r["error"] for r in rows if isinstance(r, dict) and set(r) == {"error"}]
         real_rows = [r for r in rows if not (isinstance(r, dict) and set(r) == {"error"})]
         if real_rows:
             lines.append(f"查询完成，共找到 {len(real_rows)} 条数据，例如：")
@@ -134,7 +145,7 @@ def _result_reply(plan) -> str:
         elif "not_connected" in errors:
             lines.append("这个操作还没有连通到真实系统（尚未完成对接），所以查不到数据。请联系管理员完成该系统的对接后再试。")
         elif errors:
-            lines.append("查询时访问业务系统失败了，已记录详细原因（可在「审计」页查看），请稍后重试或联系管理员。")
+            lines.append("查询时访问业务系统失败了（已记录详细原因，可在「审计」页查看）。可能是目标不存在或参数不对，请换个条件或联系管理员。")
         else:
             lines.append("查询完成，但没有找到符合条件的数据。可以换个说法或放宽条件再试。")
     for s in writes:
@@ -167,12 +178,26 @@ async def send_message(
         identity=p.identity, instruction=body.content, source_id=s.source_id,
     )
 
+    n_steps = len((
+        await db.execute(select(PlanStep).where(PlanStep.plan_id == plan.id))
+    ).scalars().all())
+    # write intent in the request but the plan has no write step → the system
+    # exposes no matching write operation; say so honestly instead of masking it.
+    wants_write = _looks_like_write(body.content)
+    write_note = ("这个系统目前只开通了查询类操作，还不能执行新建/修改，已按查询处理。"
+                  "如需真正写入，请联系管理员开通对应的写操作。\n\n"
+                  if (wants_write and plan.writes == 0 and n_steps) else "")
+
     if plan.status == "denied":
         reply = "这个请求超出了你的权限范围，没有执行。如需办理，请联系管理员开通相应权限。"
+    elif not n_steps:
+        reply = ("这个系统里目前没有能满足这个请求的功能，所以没有执行。"
+                 + ("如果你需要新建/修改类操作，请联系管理员开通对应的写操作。" if wants_write else
+                    "可以换种问法，或让管理员确认该系统是否已开通相关能力。"))
     elif plan.required_confirm_level == "auto":
         # no human gate → execute the (read-only) plan now and report truthfully
         plan = await orchestrator.confirm_plan(db, plan, approver=p.identity)
-        reply = (_result_reply(plan) if plan.status == "done"
+        reply = write_note + (_result_reply(plan) if plan.status == "done"
                  else f"已生成方案，但执行没有完全成功。{_result_reply(plan)}".strip())
     elif plan.required_confirm_level == "dual":
         reply = (f"我准备好了这个方案（含 {plan.writes} 个修改动作）。这类操作影响较大，"
