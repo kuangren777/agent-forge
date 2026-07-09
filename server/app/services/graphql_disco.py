@@ -60,9 +60,8 @@ def _type_str(type_ref: dict | None) -> str:
 
 
 def _scalar_leaves(type_ref: dict | None, types_by_name: dict[str, dict]) -> str:
-    """Default selection set for a field's return type: the object's own scalar
-    and enum leaf fields (no args, not nested objects) — a flat, always-valid
-    row. Empty string when the return is itself a scalar (no selection needed)."""
+    """A named object type's own scalar/enum leaf fields (no args, not nested) —
+    a flat, always-valid row. Empty when the type is a scalar/enum itself."""
     named = _named(type_ref)
     if not named:
         return ""
@@ -80,6 +79,33 @@ def _scalar_leaves(type_ref: dict | None, types_by_name: dict[str, dict]) -> str
         if inner and inner.get("kind") in ("SCALAR", "ENUM"):
             leaves.append(f["name"])
     return " ".join(leaves[:24])
+
+
+def _selection(type_ref: dict | None, types_by_name: dict[str, dict]) -> str:
+    """Default selection set for a field's return type. Handles the two shapes
+    that cover almost all GraphQL reads:
+      • a plain object/list → its scalar leaf columns
+      • a Relay connection ({ totalCount, edges { node } }, as Saleor/Shopify/
+        GitHub use) → totalCount + edges.node's scalar leaves, so a "list X"
+        query returns the actual business rows, not just a count wrapper.
+    Empty string for a scalar return (no sub-selection needed)."""
+    named = _named(type_ref)
+    if not named:
+        return ""
+    tdef = types_by_name.get(named["name"])
+    if not tdef or tdef.get("kind") not in ("OBJECT", "INTERFACE"):
+        return ""
+    fnames = {f.get("name"): f for f in (tdef.get("fields") or [])}
+    edges_f = fnames.get("edges")
+    if edges_f is not None:                       # looks like a Relay connection
+        edge_t = types_by_name.get((_named(edges_f.get("type")) or {}).get("name", ""))
+        node_f = next((f for f in (edge_t or {}).get("fields") or []
+                       if f.get("name") == "node"), None) if edge_t else None
+        node_leaves = _scalar_leaves(node_f.get("type"), types_by_name) if node_f else ""
+        if node_leaves:
+            tc = "totalCount " if "totalCount" in fnames else ""
+            return f"{tc}edges {{ node {{ {node_leaves} }} }}"
+    return _scalar_leaves(type_ref, types_by_name)
 
 
 async def discover_graphql(config: dict) -> list[dict]:
@@ -132,7 +158,7 @@ async def discover_graphql(config: dict) -> list[dict]:
                 "transport": "graphql",
                 "gql_type": gql_type,
                 "graphql_url": url,
-                "selection": _scalar_leaves(f.get("type"), types_by_name),
+                "selection": _selection(f.get("type"), types_by_name),
                 "arg_types": arg_types,
                 # params/summary feed the LLM naming digest — same shape REST uses
                 # ({in, required, type}), so the shared digest formatter works.

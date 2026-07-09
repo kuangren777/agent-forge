@@ -456,6 +456,15 @@ class GraphQLExecutor(Executor):
         value = self._field_value(payload, (binding or {}).get("field", ""))
         if value is None:
             return []
+        # Relay connection ({totalCount, edges:[{node}]}, à la Saleor/Shopify/GitHub):
+        # the business rows are edges[].node — unwrap them, and surface totalCount as
+        # the grand-total so "how many" answers reflect the whole set, not the page.
+        if isinstance(value, dict) and isinstance(value.get("edges"), list):
+            if meta_out is not None and isinstance(value.get("totalCount"), int):
+                meta_out["total"] = value["totalCount"]
+            nodes = [e["node"] for e in value["edges"]
+                     if isinstance(e, dict) and isinstance(e.get("node"), dict)]
+            return nodes
         if isinstance(value, (str, int, float, bool)):
             return [{(binding or {}).get("field", "value"): value}]
         return _rows(value)

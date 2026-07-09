@@ -41,6 +41,28 @@ def test_scalar_leaves_empty_for_scalar_return():
     assert g._scalar_leaves({"kind": "SCALAR", "name": "Int"}, {"Int": {"kind": "SCALAR"}}) == ""
 
 
+def test_selection_relay_connection_reaches_node_fields():
+    # Saleor/Shopify/GitHub shape: Query.products -> ProductCountableConnection
+    # { totalCount, edges { node: Product } }. Selection must dig into node.
+    tmap = {
+        "ProductConnection": {"kind": "OBJECT", "fields": [
+            {"name": "totalCount", "args": [], "type": {"kind": "SCALAR", "name": "Int"}},
+            {"name": "edges", "args": [], "type": {"kind": "LIST", "ofType":
+                {"kind": "OBJECT", "name": "ProductEdge"}}},
+        ]},
+        "ProductEdge": {"kind": "OBJECT", "fields": [
+            {"name": "node", "args": [], "type": {"kind": "OBJECT", "name": "Product"}},
+        ]},
+        "Product": {"kind": "OBJECT", "fields": [
+            {"name": "id", "args": [], "type": {"kind": "SCALAR", "name": "ID"}},
+            {"name": "name", "args": [], "type": {"kind": "SCALAR", "name": "String"}},
+        ]},
+        "Int": {"kind": "SCALAR"}, "ID": {"kind": "SCALAR"}, "String": {"kind": "SCALAR"},
+    }
+    sel = g._selection({"kind": "OBJECT", "name": "ProductConnection"}, tmap)
+    assert sel == "totalCount edges { node { id name } }"
+
+
 # ---------- introspection discovery ----------
 
 _INTROSPECTION = {
@@ -159,6 +181,25 @@ async def test_graphql_read_unwraps_field_and_honest_errors(monkeypatch):
                         _fake_client(httpx.Response(200, json={"errors": [{"message": "denied"}]})))
     rows = await ex.read(None, None, "users", {})
     assert rows == [{"error": "graphql_error:denied"}]
+
+
+@pytest.mark.asyncio
+async def test_graphql_read_unwraps_relay_connection(monkeypatch):
+    ex = GraphQLExecutor()
+    binding = {"source_id": "0" * 32, "field": "products", "gql_type": "query",
+               "selection": "totalCount edges { node { id name } }", "arg_types": {},
+               "graphql_url": "/graphql/"}
+
+    async def resolve(self, db, tid, key): return binding, {"base_url": "http://x"}
+    monkeypatch.setattr(GraphQLExecutor, "_resolve", resolve)
+    monkeypatch.setattr(targets, "ensure_login_token", _noop)
+    conn = {"data": {"products": {"totalCount": 42, "edges": [
+        {"node": {"id": "1", "name": "Widget"}}, {"node": {"id": "2", "name": "Gadget"}}]}}}
+    monkeypatch.setattr(targets, "client_for", _fake_client(httpx.Response(200, json=conn)))
+    meta: dict = {}
+    rows = await ex.read(None, None, "products", {}, meta)
+    assert rows == [{"id": "1", "name": "Widget"}, {"id": "2", "name": "Gadget"}]  # edges[].node
+    assert meta["total"] == 42                            # totalCount → grand-total
 
 
 async def _noop(*a, **kw):
