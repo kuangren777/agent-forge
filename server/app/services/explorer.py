@@ -30,6 +30,7 @@ from app.models.sources import (
 )
 from app.services import targets
 from app.services import graphql_disco
+from app.services import xmlrpc_disco
 from app.services.exploration_prompts import (
     DESCRIBE_METADATA, NAME_ENDPOINTS, PROMPT_VERSION, PROPOSE_ENDPOINTS,
 )
@@ -109,6 +110,25 @@ def _graphql_ops_list(endpoints: list[dict]) -> list[dict]:
     return ops
 
 
+_XMLRPC_VERB_CN = {"search": "查询", "count": "统计", "create": "新建",
+                   "update": "更新", "delete": "删除"}
+
+
+def _xmlrpc_ops_list(endpoints: list[dict]) -> list[dict]:
+    """Deterministically name Odoo XML-RPC model.verb pseudo-endpoints. model.verb
+    is a stable identifier, so no LLM naming — key = model.verb, human desc from
+    the model's display name + the CRUD verb."""
+    ops = []
+    for e in endpoints:
+        verb = e["path"].rsplit(".", 1)[-1]
+        kind = "query" if e.get("op_kind") == "query" else "mutation"
+        model_name = (e.get("summary", "") or "").split(" · ")[0] or e.get("model", "")
+        cn = _XMLRPC_VERB_CN.get(verb, verb)
+        ops.append({"key": e["path"], "method": e["method"], "path": e["path"],
+                    "kind": kind, "desc": f"{cn}{model_name}"[:200]})
+    return ops
+
+
 async def _discover_endpoints(db, job_id, source, cfg, prof) -> tuple[list[dict], str, str | None]:
     """Automatic API-surface discovery for a live target. Returns
     (endpoints, mode, spec_url). Preference order:
@@ -132,6 +152,14 @@ async def _discover_endpoints(db, job_id, source, cfg, prof) -> tuple[list[dict]
             seen = {(e["method"], e["path"]) for e in gql_eps}
             gql_eps += [e for e in manual if (e["method"], e["path"]) not in seen]
             return gql_eps, "graphql", cfg["graphql_url"]
+    # XML-RPC transport (Odoo-style): uniform CRUD per model, discovered via RPC.
+    if cfg.get("xmlrpc"):
+        rpc_eps = await xmlrpc_disco.discover_xmlrpc(cfg)
+        if rpc_eps:
+            await _emit(db, job_id, "xmlrpc", {"models": len({e["model"] for e in rpc_eps}),
+                                               "ops": len(rpc_eps)})
+            await db.commit()
+            return rpc_eps, "xmlrpc", f"{cfg.get('base_url','')}/xmlrpc/2"
     spec_url, spec = await targets.discover_spec(cfg)
     if spec is not None:
         endpoints = targets.summarize_endpoints(spec)
@@ -257,14 +285,14 @@ async def run_exploration(job_id: uuid.UUID) -> None:
         job.phase, job.progress = 3, 70
         emodel = explorer_model(prof.model)
         try:
-            if endpoints and mode == "graphql":
-                # GraphQL field names ARE machine-readable identifiers, so naming is
-                # deterministic — no LLM guessing (which would rewrite every field to
-                # "POST /graphql" and break the endpoint match). key = field name,
-                # kind = Query/Mutation straight from the schema.
+            if endpoints and mode in ("graphql", "xmlrpc"):
+                # GraphQL fields / XML-RPC model.verb are machine-readable identifiers,
+                # so naming is deterministic — no LLM guessing (which would rewrite them
+                # and break the endpoint match). key/kind come straight from the schema.
                 biz = [e for e in endpoints if not _is_junk_endpoint(e)]
-                ops_list = _graphql_ops_list(biz)
-                await _emit(db, job_id, "name", {"mode": "graphql", "endpoints": len(biz),
+                ops_list = (_graphql_ops_list(biz) if mode == "graphql"
+                            else _xmlrpc_ops_list(biz))
+                await _emit(db, job_id, "name", {"mode": mode, "endpoints": len(biz),
                                                  "named": len(ops_list)})
                 await db.commit()
             elif endpoints:
@@ -357,6 +385,18 @@ async def run_exploration(job_id: uuid.UUID) -> None:
                     input_schema = {"desc": str(op.get("desc", ""))[:200],
                                     "params": ep.get("params") or {}}
                     executor = "GraphQLExecutor"
+                elif ep.get("transport") == "xmlrpc":
+                    # Odoo XML-RPC: kind from the CRUD verb; binding carries the model,
+                    # the odoo method, and a default field set for readable rows.
+                    kind = "query" if ep.get("op_kind") == "query" else "mutation"
+                    binding = {
+                        "source_id": str(source.id), "transport": "xmlrpc",
+                        "model": ep["model"], "rpc_method": ep["rpc_method"],
+                        "op_kind": ep.get("op_kind", "query"), "fields": ep.get("fields") or [],
+                    }
+                    input_schema = {"desc": str(op.get("desc", ""))[:200],
+                                    "params": ep.get("params") or {}}
+                    executor = "XMLRPCExecutor"
                 else:
                     kind = _infer_kind(ep["method"], raw_key, op.get("desc", ""),
                                        ep.get("path", ""), ep.get("summary", ""))
@@ -379,8 +419,8 @@ async def run_exploration(job_id: uuid.UUID) -> None:
                                        input_schema=input_schema, output_schema={},
                                        capability_requirements={}, executor_hint=executor))
             await _emit(db, job_id, "op", {"key": key, "kind": kind, "desc": op.get("desc", ""),
-                                           "binding": ({"method": binding.get("method") or binding.get("gql_type"),
-                                                        "path": binding.get("path") or binding.get("field")}
+                                           "binding": ({"method": binding.get("method") or binding.get("gql_type") or binding.get("rpc_method"),
+                                                        "path": binding.get("path") or binding.get("field") or binding.get("model")}
                                                        if binding else None)})
             await _register_operation(db, source, key, kind, job_id,
                                       executor=executor, binding=binding, input_schema=input_schema)

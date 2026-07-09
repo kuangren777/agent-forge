@@ -6,9 +6,11 @@ compensation (`rollback`) — there is no mock toast path.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
+import xmlrpc.client
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.business import BizRecord
 from app.services import targets
+from app.services import xmlrpc_disco
 
 
 def _truncate(payload: Any, limit: int = 4000) -> Any:
@@ -485,6 +488,125 @@ class GraphQLExecutor(Executor):
                 "before": before_state}
 
 
+_XMLRPC_UID: dict[tuple, int] = {}   # (base_url, db, user) → authenticated uid
+
+
+class XMLRPCExecutor(Executor):
+    """Executes an operation bound to an Odoo-style XML-RPC model+verb.
+
+    Binding (operations.binding_json): {source_id, transport:"xmlrpc", model,
+    rpc_method, op_kind, fields}. Auth is per-call (db, uid, password) — uid is
+    cached per source. Reads run search_read/search_count; writes run
+    create/write/unlink. xmlrpc Faults surface as honest failure, never masked.
+    """
+    name = "XMLRPCExecutor"
+    _META_KEYS = {"limit", "offset", "order", "fields", "user_id", "domain", "ids", "id"}
+
+    async def _resolve(self, db, tenant_id, op_key):
+        from app.models.registry import Operation
+        from app.models.sources import DataSource
+        op = (
+            await db.execute(
+                select(Operation)
+                .where(Operation.tenant_id == tenant_id, Operation.op_key == op_key)
+                .order_by(Operation.version.desc())
+            )
+        ).scalars().first()
+        binding = (op.binding_json or {}) if op else {}
+        if not binding.get("model"):
+            return None, None
+        source = await db.get(DataSource, uuid.UUID(binding["source_id"]))
+        return binding, (source.config_json or {}) if source else None
+
+    @staticmethod
+    def _uid(base_url: str, xr: dict, password: str) -> int | None:
+        key = (base_url, xr.get("db"), xr.get("username"))
+        if key not in _XMLRPC_UID:
+            uid = xmlrpc_disco._authenticate(base_url, xr.get("db"), xr.get("username"), password)
+            if not uid:
+                return None
+            _XMLRPC_UID[key] = uid
+        return _XMLRPC_UID[key]
+
+    def _domain(self, kwargs: dict) -> list:
+        dom = kwargs.get("domain")
+        if isinstance(dom, list):
+            return dom
+        return [[k, "=", v] for k, v in kwargs.items()
+                if k not in self._META_KEYS and v is not None]
+
+    async def _call(self, db, tenant_id, op_key, kwargs) -> tuple[Any, ExecutorResult]:
+        binding, config = await self._resolve(db, tenant_id, op_key)
+        if binding is None or config is None:
+            return None, ExecutorResult(error_code="no_binding")
+        xr = (config.get("xmlrpc") or {})
+        base_url = config.get("base_url") or ""
+        password = xmlrpc_disco.resolve_xmlrpc_password(xr)
+        if not password:
+            return None, ExecutorResult(error_code="no_credentials")
+        model = binding["model"]
+        method = binding.get("rpc_method", "search_read")
+
+        def _work() -> Any:
+            uid = self._uid(base_url, xr, password)
+            if not uid:
+                raise xmlrpc.client.Fault(1, "authentication failed")
+            db_, pw = xr.get("db"), password
+            if method == "search_read":
+                return xmlrpc_disco._execute(base_url, db_, uid, pw, model, "search_read",
+                    [self._domain(kwargs)],
+                    {"fields": binding.get("fields") or ["id", "display_name"],
+                     "limit": int(kwargs.get("limit") or 50)})
+            if method == "search_count":
+                return xmlrpc_disco._execute(base_url, db_, uid, pw, model, "search_count",
+                                             [self._domain(kwargs)])
+            if method == "create":
+                vals = {k: v for k, v in kwargs.items() if k not in self._META_KEYS and v is not None}
+                return xmlrpc_disco._execute(base_url, db_, uid, pw, model, "create", [vals])
+            if method == "write":
+                ids = kwargs.get("ids") or ([kwargs["id"]] if kwargs.get("id") is not None else [])
+                vals = {k: v for k, v in kwargs.items() if k not in self._META_KEYS and v is not None}
+                return xmlrpc_disco._execute(base_url, db_, uid, pw, model, "write",
+                                             [[int(i) for i in ids], vals])
+            if method == "unlink":
+                ids = kwargs.get("ids") or ([kwargs["id"]] if kwargs.get("id") is not None else [])
+                return xmlrpc_disco._execute(base_url, db_, uid, pw, model, "unlink",
+                                             [[int(i) for i in ids]])
+            raise xmlrpc.client.Fault(1, f"unsupported method {method}")
+
+        try:
+            payload = await asyncio.to_thread(_work)
+            error_code = None
+        except xmlrpc.client.Fault as fault:
+            payload, error_code = None, f"rpc_error:{fault.faultString}"[:60]
+        except (OSError, xmlrpc.client.ProtocolError) as exc:
+            payload, error_code = None, f"network_error:{type(exc).__name__}"
+        result = ExecutorResult(
+            before_state={},
+            after_state={"model": model, "method": method, "response": _truncate(payload)},
+            error_code=error_code,
+        )
+        return payload, result
+
+    async def read(self, db, tenant_id, op_key, kwargs, meta_out=None):
+        payload, result = await self._call(db, tenant_id, op_key, kwargs)
+        if result.error_code:
+            return [{"error": result.error_code}]
+        if isinstance(payload, int):                      # search_count → the total
+            if meta_out is not None:
+                meta_out["total"] = payload
+            return [{"count": payload}]
+        return _rows(payload)
+
+    async def execute(self, db, tenant_id, op_key, kwargs):
+        _, result = await self._call(db, tenant_id, op_key, kwargs)
+        return result
+
+    async def rollback(self, db, before_state, after_state):
+        return {"note": "external ERP write — manual compensation may be required",
+                "before": before_state}
+
+
 class SQLExecutor(Executor):
     name = "SQLExecutor"
 
@@ -504,7 +626,7 @@ class RPAExecutor(Executor):
 
 EXECUTORS: dict[str, Executor] = {
     e.name: e for e in (FunctionExecutor(), APIExecutor(), GraphQLExecutor(),
-                        SQLExecutor(), RPAExecutor())
+                        XMLRPCExecutor(), SQLExecutor(), RPAExecutor())
 }
 
 
