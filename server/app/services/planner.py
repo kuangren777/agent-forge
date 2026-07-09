@@ -45,6 +45,10 @@ Return JSON with this exact shape:
   "policy_hints": ["<short hint>", ...]
 }
 Only use op_key values present in the catalogue. Keep steps minimal and correct.
+In `reasoning_summary` and every `label`, refer to operations by their Chinese
+business meaning (from the catalogue description), NEVER the raw English op_key
+or field name — the reader is a non-technical domain expert. E.g. write
+「查询员工列表」, not "staffUsers 查询操作".
 
 CRITICAL — fill `args` with the CONCRETE VALUES the user gave. Each catalogue
 line shows the operation's argument names after `args:` (path/query params) and
@@ -130,11 +134,24 @@ def _normalise(draft: dict) -> dict:
     confirm = draft.get("required_confirm_level")
     if confirm not in {"auto", "confirm", "dual"}:
         confirm = "confirm" if writes else "auto"
+    # op_key hiding: the model often echoes the raw English op_key in its prose
+    # despite instructions. Deterministically swap each op_key for its human label
+    # so a domain expert never sees "staffUsers"/"hardware.list" in the explanation.
+    # Longest keys first, so a key that is a prefix of another can't partial-match.
+    renames = sorted(((s["op_key"], s["label"]) for s in steps if s.get("op_key")),
+                     key=lambda kv: len(kv[0]), reverse=True)
+
+    def _humanize(text: str) -> str:
+        for key, label in renames:
+            if key and label and key in text:
+                text = text.replace(key, label)
+        return text
+
     return {
-        "intent": str(draft.get("intent", "")).strip()[:300],
-        "reasoning_summary": str(draft.get("reasoning_summary", "")).strip()[:600],
+        "intent": _humanize(str(draft.get("intent", "")).strip()[:300]),
+        "reasoning_summary": _humanize(str(draft.get("reasoning_summary", "")).strip()[:600]),
         "writes": writes,
         "required_confirm_level": confirm,
         "steps": steps,
-        "policy_hints": [str(h)[:120] for h in draft.get("policy_hints", [])][:6],
+        "policy_hints": [_humanize(str(h)[:120]) for h in draft.get("policy_hints", [])][:6],
     }

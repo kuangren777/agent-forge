@@ -7,7 +7,7 @@ import {
 import { useSources } from '../features/sources';
 import { useQueryClient } from '@tanstack/react-query';
 import type { DataSource, Plan } from '../api/types';
-import { confirmLabel, capLabel, OP_KEY_LABEL, stepKindLabel } from '../lib/labels';
+import { confirmLabel, capLabel, opTitle, stepKindLabel } from '../lib/labels';
 import { shortSourceName, relTime } from '../lib/format';
 import { setSessionMeta, getSessionMeta } from '../lib/sessionMeta';
 
@@ -254,7 +254,7 @@ export function ChatAside() {
               <div key={s.step_no} className="row vcenter gap8 sm muted2">
                 <Dot k={capDot(s.kind)} />
                 <span className="mono xs" style={{ width: 14 }}>{s.step_no}</span>
-                <span className="fill">{s.op_key ? (OP_KEY_LABEL[s.op_key] ?? s.op_key) : stepKindLabel(s.kind)}</span>
+                <span className="fill">{s.label?.trim() || (s.op_key ? opTitle({ op_key: s.op_key }) : stepKindLabel(s.kind))}</span>
                 <Tag k={s.capability_out}>{capLabel(s.capability_out)}</Tag>
               </div>
             ))}

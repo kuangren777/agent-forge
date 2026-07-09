@@ -260,10 +260,7 @@ export function OpsMain() {
             {pageItems.map((o) => (
               <tr key={o.id} className={o.id === opsSel ? 'sel' : ''} onClick={() => setOpsSel(o.id)}>
                 <td className="b" style={{ color: 'var(--ink)' }}>
-                  <div className="col" style={{ gap: 1 }}>
-                    <span>{opTitle(o)}</span>
-                    <span className="xs muted mono" style={{ fontWeight: 400 }}>{o.op_key}</span>
-                  </div>
+                  <span>{opTitle(o)}</span>
                 </td>
                 <td className="sm muted2" style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {o.source_name ? shortSourceName(o.source_name) : '内置'}

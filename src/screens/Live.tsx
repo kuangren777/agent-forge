@@ -4,7 +4,7 @@ import { Icon, Tag, Dot, Note, Btn, StatTile } from '../components/kit';
 import { useApp } from '../lib/appContext';
 import { useMe } from '../features/auth';
 import { useSources, useStartExplore, useJob, useExplorationStream } from '../features/sources';
-import { streamLabel, kindLabel, explorerLabel, OP_KEY_LABEL } from '../lib/labels';
+import { streamLabel, kindLabel, explorerLabel, opTitle } from '../lib/labels';
 import { shortSourceName, fmtInt } from '../lib/format';
 
 const PHASES = ['全局认知', '深度探索', '操作生成', '能力标注'];
@@ -170,7 +170,7 @@ export function LiveMain() {
               .map((e, i) => (
                 <div key={i}>
                   <span className="c">{`[${streamLabel(e.type)}] `}</span>
-                  <span>{e.type === 'op' ? `${OP_KEY_LABEL[String(e.payload.key)] ?? e.payload.key}（${kindLabel(String(e.payload.kind))}）`
+                  <span>{e.type === 'op' ? `${String(e.payload.desc || '').trim() || opTitle({ op_key: String(e.payload.key) })}（${kindLabel(String(e.payload.kind))}）`
                     : e.type === 'phase' ? `阶段 ${e.payload.phase} · ${e.payload.label}`
                     : e.type === 'rule' ? `${e.payload.text}`
                     : e.type === 'done' ? `共发现 ${e.payload.operations} 个操作`
