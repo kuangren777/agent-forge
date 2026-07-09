@@ -398,6 +398,13 @@ class GraphQLExecutor(Executor):
         used = {k: _gql_coerce(v, arg_types[k])
                 for k, v in kwargs.items()
                 if k in arg_types and v is not None and k != "user_id"}
+        # Relay connections REQUIRE a first/last pagination arg or the server errors
+        # out ("provide a first or last value"). A domain expert asking "list X" has
+        # no idea about pagination, so default first:50 when the query is a connection
+        # (selection has edges) and no page arg was given — makes "list" queries work.
+        if ("edges" in selection and "first" in arg_types
+                and "first" not in used and "last" not in used):
+            used["first"] = 50
         var_decls = ", ".join(f"${k}: {arg_types[k]}" for k in used)
         arg_uses = ", ".join(f"{k}: ${k}" for k in used)
         head = gql_type + (f"({var_decls})" if var_decls else "")

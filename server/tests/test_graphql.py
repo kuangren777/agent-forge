@@ -136,6 +136,19 @@ def test_build_document_query_with_args_and_selection():
     assert vars == {"limit": 3}          # coerced to Int; unknown arg dropped
 
 
+def test_build_document_injects_default_page_for_relay_connection():
+    # a "list products" connection query with no page arg supplied → default first:50
+    b = {"field": "products", "gql_type": "query",
+         "selection": "totalCount edges { node { id name } }",
+         "arg_types": {"first": "Int", "channel": "String"}}
+    doc, vars = GraphQLExecutor._build_document(b, {})
+    assert vars == {"first": 50}
+    assert "products(first: $first)" in doc
+    # caller-supplied page size wins (no override)
+    doc2, vars2 = GraphQLExecutor._build_document(b, {"first": "5"})
+    assert vars2 == {"first": 5}
+
+
 def test_build_document_scalar_return_no_selection():
     b = {"field": "server_ping", "gql_type": "query", "selection": "", "arg_types": {}}
     doc, _ = GraphQLExecutor._build_document(b, {})
