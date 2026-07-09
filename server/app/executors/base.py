@@ -264,15 +264,26 @@ class APIExecutor(Executor):
         rest = {k: _coerce(v, params_spec.get(k, {}).get("type"))
                 for k, v in kwargs.items()
                 if k not in used and v is not None and k != "user_id"}
+        body_fields = binding.get("body_fields") or []
+        body = {k: v for k, v in rest.items() if not body_fields or k in body_fields}
+        query = {k: v for k, v in rest.items() if k not in body} if method not in ("GET", "DELETE") else rest
+
+        async def _do(client, p):
+            if method in ("GET", "DELETE"):
+                return await client.request(method, p, params=rest)
+            return await client.request(method, p, json=body, params=query or None)
+
         try:
             async with targets.client_for(config) as client:
-                if method in ("GET", "DELETE"):
-                    resp = await client.request(method, path, params=rest)
-                else:
-                    body_fields = binding.get("body_fields") or []
-                    body = {k: v for k, v in rest.items() if not body_fields or k in body_fields}
-                    query = {k: v for k, v in rest.items() if k not in body}
-                    resp = await client.request(method, path, json=body, params=query or None)
+                resp = await _do(client, path)
+                # 307/308 PRESERVE method+body (unlike 301/302) — follow them once.
+                # Common for frameworks (Gin/new-api) that redirect a collection
+                # POST without a trailing slash to the canonical /collection/ form.
+                if resp.status_code in (307, 308):
+                    loc = resp.headers.get("location")
+                    if loc:
+                        target = loc if loc.startswith("http") else loc
+                        resp = await _do(client, target)
         except httpx.HTTPError as exc:
             return None, ExecutorResult(error_code=f"network_error:{type(exc).__name__}")
         try:
