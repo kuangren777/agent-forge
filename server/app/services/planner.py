@@ -45,6 +45,19 @@ Return JSON with this exact shape:
   "policy_hints": ["<short hint>", ...]
 }
 Only use op_key values present in the catalogue. Keep steps minimal and correct.
+
+CRITICAL — fill `args` with the CONCRETE VALUES the user gave. Each catalogue
+line shows the operation's argument names after `args:` (path/query params) and
+`body:` (fields to send). For EVERY step, especially WRITE steps, extract the
+literal values from the user's instruction and put them in `args` under those
+EXACT names. Examples: user says «新建名为 QANAME 配额无限的令牌» and the op is
+`token.create | body: name, remain_quota, unlimited_quota` → args must be
+{"name":"QANAME","unlimited_quota":true}. User says «查 owner=acme repo=web 的
+分支» with `args: owner(path*), repo(path*)` → args {"owner":"acme","repo":"web"}.
+Required (*) path params MUST be provided — if the user did not give a required
+value and it cannot be chained from a prior step via "$stepN.field", do NOT emit
+that step; instead add a policy_hint that the value is missing. Never emit a
+write step with empty args when the user specified concrete values.
 All natural-language fields you write — intent, reasoning_summary, every step
 label, and policy_hints — MUST be in the SAME LANGUAGE as the user's instruction
 (Chinese if the instruction is Chinese). Never write these in English for a

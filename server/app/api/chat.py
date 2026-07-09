@@ -245,9 +245,12 @@ async def confirm_plan(
     plan = await _owned_plan(db, p, plan_id)
     plan = await orchestrator.confirm_plan(db, plan, approver=p.identity)
     reply = None
-    if plan.status in ("done", "partial_failed") and getattr(plan, "exec_context", None):
+    if plan.status == "failed":
+        reply = "很抱歉，这个操作没能执行成功（方案在执行时出错，已记录在「审计」页）。数据没有被改动，请稍后重试或换种说法。"
+    elif plan.status in ("done", "partial_failed") and getattr(plan, "exec_context", None):
         # surface the real outcome in the conversation, in plain language
         reply = _result_reply(plan)
+    if reply:
         db.add(ChatMessage(session_id=plan.session_id, role="assistant", content=reply,
                            plan_id=plan.id, created_at=datetime.now(timezone.utc)))
     await db.commit()

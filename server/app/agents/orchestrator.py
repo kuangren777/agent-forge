@@ -47,6 +47,12 @@ async def _available_operations(db: AsyncSession, tenant_id: uuid.UUID, role: st
             perms_by_op.setdefault(pm.operation_id, []).append(pm)
     out = []
     for op in ops:
+        # skip unbound API aliases: an APIExecutor op with no real binding is a
+        # metadata-only leftover (e.g. a duplicate name the probe never grounded).
+        # Keeping it lets the planner route a query to a dead endpoint → the
+        # bound sibling never runs. FunctionExecutor demo ops (no binding) stay.
+        if op.executor_binding == "APIExecutor" and not op.binding_json:
+            continue
         perms = perms_by_op.get(op.id, [])
         roles = [p.subject_id for p in perms if p.subject_type == "role" and p.effect == "allow"]
         schema = op.input_schema_json or {}
@@ -245,7 +251,24 @@ async def confirm_plan(db: AsyncSession, plan: ExecutionPlan, *, approver: Ident
 
     trace = await db.get(Trace, plan.trace_id)
     plan.status = "executing"
-    ctx = await _execute_plan(db, plan, trace, steps)
+    try:
+        ctx = await _execute_plan(db, plan, trace, steps)
+    except Exception as exc:  # noqa: BLE001 — a broken plan shape must fail
+        # gracefully (honest failure), never surface a raw 500. Mark the plan
+        # failed, record the reason, and let the caller show a plain-language error.
+        await db.rollback()
+        plan = (await db.execute(
+            select(ExecutionPlan).where(ExecutionPlan.id == plan.id).with_for_update())).scalar_one()
+        plan.status = "failed"
+        trace = await db.get(Trace, plan.trace_id)
+        if trace:
+            trace.status = "open"
+        await audit.append_event(db, plan.trace_id, "EXECUTION_FAILED",
+                                 {"error": f"{type(exc).__name__}: {exc}"[:200]}, cap="trusted")
+        plan.exec_context = {"rows": [], "selected": [], "query_errors": ["plan_execution_failed"],
+                             "steps": [], "fatal": f"{type(exc).__name__}"}
+        await db.flush()
+        return plan
 
     had_error = any(st.status == "error" for st in steps)
     await audit.append_event(db, plan.trace_id, "DATAFLOW_SNAPSHOT", {"steps": len(steps)}, cap="data")
