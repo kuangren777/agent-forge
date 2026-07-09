@@ -339,3 +339,35 @@ def test_risk_policy_by_operation():
     assert confirm == "dual" and grants == [("admin", None)]
     risk, confirm, grants = _risk_policy("mutation", "channel.update", "PUT")
     assert confirm == "dual"  # 'channel' is billing-sensitive in _ADMIN_AREA
+
+
+@pytest.mark.asyncio
+async def test_write_prefix_aligned_to_confirmed_read(monkeypatch):
+    # new-api style: reads live at /api/token/ (no v1), LLM guessed write at /api/v1/token
+    async def fake_request(self, method, path, **kw):
+        if path == "/api/token/1" or path == "/api/token/":
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(404)
+
+    class FakeClient:
+        def __init__(self, **kw): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        request = fake_request
+
+    monkeypatch.setattr(targets, "client_for", lambda cfg, **kw: FakeClient())
+    proposed = targets.normalize_manual([
+        {"method": "GET", "path": "/api/token/", "summary": "list tokens"},
+        {"method": "POST", "path": "/api/v1/token", "summary": "create token"},   # wrong prefix
+    ])
+    kept = await targets.validate_endpoints({"base_url": "http://x"}, proposed)
+    post = next(e for e in kept if e["method"] == "POST")
+    assert post["path"] == "/api/token"          # aligned to the confirmed read's /api prefix
+    assert post["prefix_corrected"] is True
+
+
+def test_api_prefix_split():
+    assert targets._api_prefix_split("/api/v1/token") == ("/api/v1", "/token")
+    assert targets._api_prefix_split("/api/token/") == ("/api", "/token/")
+    assert targets._api_prefix_split("/v4/users") == ("/v4", "/users")
+    assert targets._api_prefix_split("/users") == ("", "/users")

@@ -174,17 +174,47 @@ async def validate_endpoints(config: dict, endpoints: list[dict],
         # item routes end in a param (/users/{id}); their collection is the parent
         return path.rsplit("/", 1)[0] if path.endswith("}") else path
 
+    # map resource-signature (path minus the /api[/vN] prefix) → the confirmed
+    # read prefix, so a write's version prefix can be aligned to reality.
+    read_prefix: dict[str, str] = {}
+    for rp in live_read_paths:
+        pre, rest = _api_prefix_split(rp)
+        read_prefix.setdefault(rest.rstrip("/").lower(), pre)
+
     # Writes CANNOT be safely probed (calling them would cause a real side effect),
     # so we keep ALL proposed writes rather than dropping them — comprehensive
     # business coverage (create/update/delete for every resource) matters, and a
     # write is safe to register even if unverified: it is registered `pending`,
     # requires human approval before it can run, and if the endpoint turns out
-    # wrong the governed execution fails HONESTLY (http_404, no side effect). A
-    # write whose collection IS a confirmed live read gets a higher confidence flag.
+    # wrong the governed execution fails HONESTLY (http_404, no side effect).
     for e in writes:
-        confirmed = e["path"] in live_read_paths or _collection(e["path"]) in live_read_paths
-        out.append({**e, "verified": confirmed, "probe_status": None})
+        path = e["path"]
+        # ALIGN the write's api-version prefix to a confirmed read of the SAME
+        # resource. Spec-less systems (new-api) route reads at /api/token/ but the
+        # LLM often guesses writes at /api/v1/token → 404; if a confirmed read
+        # shares the resource under a different prefix, adopt that prefix.
+        pre, rest = _api_prefix_split(path)
+        sig = rest.rstrip("/").lower()
+        coll = re.sub(r"/\{[^}]+\}$", "", sig)
+        target_pre = read_prefix.get(sig) or read_prefix.get(coll)
+        corrected = False
+        if target_pre is not None and target_pre != pre:
+            path = target_pre + rest
+            corrected = True
+        confirmed = path in live_read_paths or _collection(path) in live_read_paths
+        out.append({**e, "path": path, "verified": confirmed or corrected,
+                    "prefix_corrected": corrected, "probe_status": None})
     return out
+
+
+def _api_prefix_split(path: str) -> tuple[str, str]:
+    """Split an API path into (version-prefix, remainder), e.g.
+    '/api/v1/token' → ('/api/v1', '/token'); '/api/token/' → ('/api', '/token/');
+    '/v4/users' → ('/v4', '/users'); '/users' → ('', '/users')."""
+    m = re.match(r"^(/api(?:/v\d+)?|/v\d+)(/.*)?$", path)
+    if m:
+        return m.group(1), (m.group(2) or "")
+    return "", path
 
 
 def _param_entry(p: dict) -> dict:
