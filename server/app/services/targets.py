@@ -22,14 +22,117 @@ persist in the database or in audit payloads.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import os
 import re
 import time
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
+
+def xml_to_rows(text: str) -> list[dict] | None:
+    """Best-effort XML → list[dict] for S3-style responses (ListBuckets returns
+    <Bucket> records, ListObjectsV2 returns <Contents> records). Collects every
+    'record-like' element (has children, all of which are leaves) as a row; falls
+    back to the root's leaf children as a single row."""
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return None
+
+    def local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    def is_record(el) -> bool:
+        return len(el) > 0 and all(len(c) == 0 for c in el)
+
+    rows: list[dict] = []
+
+    def walk(el):
+        for c in el:
+            if is_record(c):
+                rows.append({local(g.tag): g.text for g in c})
+            else:
+                walk(c)
+
+    walk(root)
+    if rows:
+        return rows
+    if len(root) > 0 and all(len(c) == 0 for c in root):
+        return [{local(c.tag): c.text for c in root}]
+    return [{local(root.tag): (root.text or "").strip()}]
+
 TIMEOUT = httpx.Timeout(10.0, read=30.0)
+
+
+class SigV4Auth(httpx.Auth):
+    """AWS Signature V4 request signer — the auth for S3-compatible object stores
+    (AWS S3, MinIO, Ceph, Cloudflare R2, Wasabi, …). SigV4 signs each specific
+    request (method + path + query + headers + body hash), so it cannot be a
+    static header; httpx calls auth_flow() per request and we sign there."""
+
+    def __init__(self, access_key: str, secret_key: str, region: str = "us-east-1",
+                 service: str = "s3"):
+        self.access_key, self.secret_key = access_key, secret_key
+        self.region, self.service = region, service
+
+    @staticmethod
+    def _sign(key: bytes, msg: str) -> bytes:
+        return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+    def _signing_key(self, datestamp: str) -> bytes:
+        k = self._sign(("AWS4" + self.secret_key).encode(), datestamp)
+        k = self._sign(k, self.region)
+        k = self._sign(k, self.service)
+        return self._sign(k, "aws4_request")
+
+    def auth_flow(self, request: httpx.Request):
+        now = datetime.now(timezone.utc)
+        amzdate, datestamp = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
+        body = request.content or b""
+        payload_hash = hashlib.sha256(body).hexdigest()
+        host = request.url.netloc.decode("ascii")
+        request.headers["host"] = host
+        request.headers["x-amz-date"] = amzdate
+        request.headers["x-amz-content-sha256"] = payload_hash
+
+        canonical_uri = quote(request.url.path or "/", safe="/~")
+        # canonical query string: params sorted by key, each key/value URI-encoded
+        pairs = sorted((quote(k, safe="~"), quote(v, safe="~"))
+                       for k, v in request.url.params.multi_items())
+        canonical_qs = "&".join(f"{k}={v}" for k, v in pairs)
+        signed_headers = "host;x-amz-content-sha256;x-amz-date"
+        canonical_headers = (f"host:{host}\n"
+                             f"x-amz-content-sha256:{payload_hash}\n"
+                             f"x-amz-date:{amzdate}\n")
+        canonical_request = "\n".join([request.method, canonical_uri, canonical_qs,
+                                       canonical_headers, signed_headers, payload_hash])
+        scope = f"{datestamp}/{self.region}/{self.service}/aws4_request"
+        string_to_sign = "\n".join([
+            "AWS4-HMAC-SHA256", amzdate, scope,
+            hashlib.sha256(canonical_request.encode()).hexdigest()])
+        signature = hmac.new(self._signing_key(datestamp), string_to_sign.encode(),
+                             hashlib.sha256).hexdigest()
+        request.headers["Authorization"] = (
+            f"AWS4-HMAC-SHA256 Credential={self.access_key}/{scope}, "
+            f"SignedHeaders={signed_headers}, Signature={signature}")
+        yield request
+
+
+def build_sigv4_auth(config: dict) -> SigV4Auth | None:
+    auth = (config or {}).get("auth") or {}
+    if auth.get("kind") != "sigv4":
+        return None
+    ak = auth.get("access_key") or os.environ.get(auth.get("access_key_env", ""))
+    sk = auth.get("secret_key") or os.environ.get(auth.get("secret_key_env", ""))
+    if not (ak and sk):
+        return None
+    return SigV4Auth(ak, sk, auth.get("region") or "us-east-1", auth.get("service") or "s3")
 
 # Common spec locations across popular enterprise systems (Gitea, Grafana,
 # NocoDB, Firefly III, WordPress, Mattermost, Metabase, Keycloak, new-api, ...)
@@ -91,17 +194,23 @@ async def ensure_login_token(config: dict, *, force: bool = False) -> None:
     body = {k: (secret if v == "$secret" else v) for k, v in body.items()}
     method = (auth.get("login_method") or "POST").upper()
     url = auth.get("login_url") or "/login"
+    tok = None
     async with httpx.AsyncClient(base_url=config.get("base_url", ""), timeout=TIMEOUT,
                                  follow_redirects=True) as client:
         if auth.get("login_form"):
             resp = await client.request(method, url, data=body)
         else:
             resp = await client.request(method, url, json=body)
-    tok = None
-    try:
-        tok = _dig(resp.json(), auth.get("token_path") or "token")
-    except (ValueError, TypeError):
-        tok = None
+        # some systems (e.g. Vaultwarden admin) return the session as a Set-Cookie
+        # rather than a JSON field — read it from the jar while the client is open.
+        if auth.get("token_from") == "cookie":
+            name = auth.get("cookie_name") or "session"
+            tok = client.cookies.get(name) or resp.cookies.get(name)
+    if tok is None:
+        try:
+            tok = _dig(resp.json(), auth.get("token_path") or "token")
+        except (ValueError, TypeError):
+            tok = None
     if tok:
         _login_cache[key] = str(tok)
 
@@ -137,10 +246,14 @@ def client_for(config: dict, *, follow_redirects: bool = False) -> httpx.AsyncCl
     # HTML page on a validation error unless the request declares JSON, which
     # would mask a real failure as an HTML 200. Redirects are NOT followed for
     # executor calls: a data API returning 3xx signals a problem, not success.
-    headers = {"Accept": "application/json", **build_auth_headers(config)}
+    # SigV4 (S3) signs per-request via an httpx.Auth flow, not a static header.
+    sigv4 = build_sigv4_auth(config)
+    headers = {"Accept": "application/json"} if sigv4 else {
+        "Accept": "application/json", **build_auth_headers(config)}
     return httpx.AsyncClient(
         base_url=(config or {}).get("base_url", ""),
         headers=headers,
+        auth=sigv4,
         timeout=TIMEOUT,
         follow_redirects=follow_redirects,
     )

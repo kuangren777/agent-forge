@@ -299,7 +299,13 @@ class APIExecutor(Executor):
         try:
             payload: Any = resp.json()
         except ValueError:
-            payload = resp.text[:2000]
+            txt = resp.text
+            # S3-compatible stores (MinIO/AWS/Ceph) answer in XML, not JSON —
+            # parse it into rows so object-storage reads look like any other query.
+            if txt.lstrip()[:5].lower().startswith("<?xml") or "xml" in resp.headers.get("content-type", ""):
+                payload = targets.xml_to_rows(txt) or txt[:2000]
+            else:
+                payload = txt[:2000]
         # a data API returning 3xx (redirect to login/HTML) or >=400 is a failure,
         # never a success — do not let a followed redirect mask it (client does not
         # follow redirects; 3xx is surfaced explicitly). ALSO: many APIs return

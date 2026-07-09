@@ -31,6 +31,7 @@ from app.models.sources import (
 from app.services import targets
 from app.services import graphql_disco
 from app.services import xmlrpc_disco
+from app.services import s3_disco
 from app.services.exploration_prompts import (
     DESCRIBE_METADATA, NAME_ENDPOINTS, PROMPT_VERSION, PROPOSE_ENDPOINTS,
 )
@@ -160,6 +161,17 @@ async def _discover_endpoints(db, job_id, source, cfg, prof) -> tuple[list[dict]
                                                "ops": len(rpc_eps)})
             await db.commit()
             return rpc_eps, "xmlrpc", f"{cfg.get('base_url','')}/xmlrpc/2"
+    # S3 transport (SigV4 object storage): fixed CRUD + enumerated buckets. These
+    # are ordinary REST endpoints (bind to APIExecutor); SigV4 signing + XML rows
+    # are handled in client_for/APIExecutor, so they flow the normal naming path.
+    if ((cfg.get("auth") or {}).get("kind")) == "sigv4":
+        s3_eps = await s3_disco.discover_s3(cfg)
+        if s3_eps:
+            await _emit(db, job_id, "s3", {"buckets": len([e for e in s3_eps if e["method"] == "GET"
+                                                            and e["path"] not in ("/", "/{bucket}")]),
+                                           "ops": len(s3_eps)})
+            await db.commit()
+            return s3_eps, "s3", f"{cfg.get('base_url','')}"
     spec_url, spec = await targets.discover_spec(cfg)
     if spec is not None:
         endpoints = targets.summarize_endpoints(spec)

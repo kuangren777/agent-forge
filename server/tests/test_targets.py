@@ -406,3 +406,32 @@ async def test_login_auth_acquires_and_caches_session_token(monkeypatch):
     # force re-login
     await targets.ensure_login_token(cfg, force=True)
     assert calls["login"] == 2
+
+
+@pytest.mark.asyncio
+async def test_login_auth_extracts_token_from_cookie(monkeypatch):
+    # Vaultwarden-style: POST /admin (form) → Set-Cookie VW_ADMIN=<jwt>, sent as a
+    # Cookie header. The token lives in the cookie jar, not the JSON body.
+    class FakeResp:
+        cookies: dict = {}
+        def json(self): raise ValueError("no json body")
+
+    class FakeClient:
+        def __init__(self, **kw): self.cookies = {"VW_ADMIN": "jwt-xyz"}
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def request(self, method, url, **kw):
+            assert kw.get("data") == {"token": "adminpw"}   # form-encoded, not json
+            return FakeResp()
+
+    monkeypatch.setattr(targets.httpx, "AsyncClient", lambda **kw: FakeClient())
+    monkeypatch.setenv("TGT_VW", "adminpw")
+    targets._login_cache.clear()
+    cfg = {"base_url": "http://x", "auth": {
+        "kind": "login", "login_url": "/admin", "login_method": "POST",
+        "login_form": True, "login_body": {"token": "$secret"},
+        "token_from": "cookie", "cookie_name": "VW_ADMIN",
+        "header": "Cookie", "prefix": "VW_ADMIN=", "secret_env": "TGT_VW"}}
+    await targets.ensure_login_token(cfg)
+    h = targets.build_auth_headers(cfg)
+    assert h["Cookie"] == "VW_ADMIN=jwt-xyz"
