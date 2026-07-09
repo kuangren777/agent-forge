@@ -371,3 +371,38 @@ def test_api_prefix_split():
     assert targets._api_prefix_split("/api/token/") == ("/api", "/token/")
     assert targets._api_prefix_split("/v4/users") == ("/v4", "/users")
     assert targets._api_prefix_split("/users") == ("", "/users")
+
+
+@pytest.mark.asyncio
+async def test_login_auth_acquires_and_caches_session_token(monkeypatch):
+    # a system whose auth = POST /api/auth {password} → {session:{sid}}, header X-FTL-SID
+    calls = {"login": 0}
+
+    class FakeResp:
+        def __init__(self, data): self._d = data
+        def json(self): return self._d
+
+    class FakeClient:
+        def __init__(self, **kw): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def request(self, method, url, **kw):
+            calls["login"] += 1
+            assert url == "/api/auth" and kw.get("json") == {"password": "sekret"}
+            return FakeResp({"session": {"valid": True, "sid": "SID-123", "csrf": "x"}})
+
+    monkeypatch.setattr(targets.httpx, "AsyncClient", lambda **kw: FakeClient())
+    monkeypatch.setenv("TGT_PH", "sekret")
+    targets._login_cache.clear()
+    cfg = {"base_url": "http://x", "auth": {
+        "kind": "login", "login_url": "/api/auth", "login_body": {"password": "$secret"},
+        "token_path": "session.sid", "header": "X-FTL-SID", "secret_env": "TGT_PH"}}
+    await targets.ensure_login_token(cfg)
+    h = targets.build_auth_headers(cfg)
+    assert h["X-FTL-SID"] == "SID-123"
+    # cached — a 2nd ensure does not re-login
+    await targets.ensure_login_token(cfg)
+    assert calls["login"] == 1
+    # force re-login
+    await targets.ensure_login_token(cfg, force=True)
+    assert calls["login"] == 2

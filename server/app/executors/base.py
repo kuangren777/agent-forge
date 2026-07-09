@@ -274,6 +274,7 @@ class APIExecutor(Executor):
             return await client.request(method, p, json=body, params=query or None)
 
         try:
+            await targets.ensure_login_token(config)   # login-kind: acquire session
             async with targets.client_for(config) as client:
                 resp = await _do(client, path)
                 # 307/308 PRESERVE method+body (unlike 301/302) — follow them once.
@@ -284,6 +285,11 @@ class APIExecutor(Executor):
                     if loc:
                         target = loc if loc.startswith("http") else loc
                         resp = await _do(client, target)
+            # a session token expired (401) → re-login once and retry
+            if resp.status_code == 401 and (config.get("auth") or {}).get("kind") == "login":
+                await targets.ensure_login_token(config, force=True)
+                async with targets.client_for(config) as client:
+                    resp = await _do(client, path)
         except httpx.HTTPError as exc:
             return None, ExecutorResult(error_code=f"network_error:{type(exc).__name__}")
         try:

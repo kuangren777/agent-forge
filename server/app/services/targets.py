@@ -48,11 +48,75 @@ def resolve_secret(auth: dict) -> str | None:
     return auth.get("secret")
 
 
+# ── login / session auth (extensibility) ───────────────────────────────────────
+# Some systems don't take a static token: they require POSTing credentials to a
+# login endpoint and using the returned session id / access token (Pi-hole SID,
+# Keycloak OAuth password grant, ...). `auth.kind == "login"` handles this:
+#   {"kind":"login", "login_url":"/api/auth", "login_method":"POST",
+#    "login_body":{"password":"$secret"}, "login_form": false,
+#    "token_path":"session.sid", "header":"sid", "prefix":"",
+#    "secret_env":"TGT_X"}
+# The acquired token is cached and re-fetched on demand / after a 401.
+_login_cache: dict[str, str] = {}
+
+
+def _login_key(config: dict) -> str:
+    auth = (config or {}).get("auth") or {}
+    return f"{config.get('base_url')}|{auth.get('login_url')}|{auth.get('secret_env')}"
+
+
+def _dig(obj, path: str):
+    for part in path.split("."):
+        if isinstance(obj, dict):
+            obj = obj.get(part)
+        elif isinstance(obj, list) and part.isdigit():
+            obj = obj[int(part)] if int(part) < len(obj) else None
+        else:
+            return None
+    return obj
+
+
+async def ensure_login_token(config: dict, *, force: bool = False) -> None:
+    """For a login-kind auth, acquire (and cache) the session token/sid. No-op
+    for other kinds. Call before making real requests; pass force=True to
+    re-login after a 401."""
+    auth = (config or {}).get("auth") or {}
+    if auth.get("kind") != "login":
+        return
+    key = _login_key(config)
+    if not force and key in _login_cache:
+        return
+    secret = resolve_secret(auth)
+    body = auth.get("login_body") or {}
+    body = {k: (secret if v == "$secret" else v) for k, v in body.items()}
+    method = (auth.get("login_method") or "POST").upper()
+    url = auth.get("login_url") or "/login"
+    async with httpx.AsyncClient(base_url=config.get("base_url", ""), timeout=TIMEOUT,
+                                 follow_redirects=True) as client:
+        if auth.get("login_form"):
+            resp = await client.request(method, url, data=body)
+        else:
+            resp = await client.request(method, url, json=body)
+    tok = None
+    try:
+        tok = _dig(resp.json(), auth.get("token_path") or "token")
+    except (ValueError, TypeError):
+        tok = None
+    if tok:
+        _login_cache[key] = str(tok)
+
+
 def build_auth_headers(config: dict) -> dict[str, str]:
     auth = (config or {}).get("auth") or {}
     kind = auth.get("kind", "none")
-    secret = resolve_secret(auth)
     headers: dict[str, str] = dict(auth.get("extra_headers") or {})
+    if kind == "login":
+        # session token was acquired by ensure_login_token() and cached
+        tok = _login_cache.get(_login_key(config))
+        if tok:
+            headers[auth.get("header", "Authorization")] = auth.get("prefix", "") + tok
+        return headers
+    secret = resolve_secret(auth)
     if kind == "none" or secret is None:
         return headers
     if kind == "bearer":
@@ -86,6 +150,7 @@ async def probe_base(config: dict) -> dict[str, Any]:
     """Reachability probe against the real target. Returns real status + latency."""
     t0 = time.monotonic()
     try:
+        await ensure_login_token(config)
         async with client_for(config, follow_redirects=True) as client:
             resp = await client.get("/")
             return {
@@ -110,6 +175,7 @@ async def discover_spec(config: dict) -> tuple[str | None, dict | None]:
     if explicit:
         candidates.append(explicit)
     candidates += [p for p in COMMON_SPEC_PATHS if p != explicit]
+    await ensure_login_token(config)
     async with client_for(config, follow_redirects=True) as client:
         for path in candidates:
             try:
@@ -143,6 +209,7 @@ async def validate_endpoints(config: dict, endpoints: list[dict],
     live_read_paths: set[str] = set()   # exact template paths confirmed to exist
     out: list[dict] = []
 
+    await ensure_login_token(config)
     async with client_for(config) as client:
         for e in reads[:max_probes]:
             probe_path = re.sub(r"\{[^{}]+\}", "1", e["path"])
