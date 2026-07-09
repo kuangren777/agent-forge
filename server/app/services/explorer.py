@@ -29,6 +29,7 @@ from app.models.sources import (
     DataSource, DiscoveredOperation, ExplorationEvent, ExplorationJob,
 )
 from app.services import targets
+from app.services import graphql_disco
 from app.services.exploration_prompts import (
     DESCRIBE_METADATA, NAME_ENDPOINTS, PROMPT_VERSION, PROPOSE_ENDPOINTS,
 )
@@ -92,6 +93,22 @@ def _infer_kind(method: str, *texts: str) -> str:
     return "mutation"
 
 
+def _graphql_ops_list(endpoints: list[dict]) -> list[dict]:
+    """Deterministically turn discovered GraphQL fields into named operations.
+    The field name is a stable identifier, so key/kind/binding need no LLM — this
+    both avoids the naming model rewriting GraphQL to 'POST /graphql' and gives a
+    100% reliable endpoint match. Description stays human-readable for routing."""
+    ops = []
+    for e in endpoints:
+        field = e["path"]
+        gt = e.get("gql_type", "query")
+        verb = "查询" if gt == "query" else "变更"
+        ret = (e.get("summary", "") or "").replace("GraphQL ", "")
+        ops.append({"key": field, "method": e["method"], "path": field,
+                    "kind": gt, "desc": f"{verb} {field}（{ret}）"[:200]})
+    return ops
+
+
 async def _discover_endpoints(db, job_id, source, cfg, prof) -> tuple[list[dict], str, str | None]:
     """Automatic API-surface discovery for a live target. Returns
     (endpoints, mode, spec_url). Preference order:
@@ -102,6 +119,19 @@ async def _discover_endpoints(db, job_id, source, cfg, prof) -> tuple[list[dict]
     override — it is NOT required; the framework adapts on its own.
     """
     endpoints: list[dict] = []
+    spec_url = None
+    # GraphQL transport: a single-endpoint introspectable schema. When configured,
+    # it is authoritative (like OpenAPI) — no LLM guessing needed.
+    if cfg.get("graphql_url"):
+        gql_eps = await graphql_disco.discover_graphql(cfg)
+        if gql_eps:
+            await _emit(db, job_id, "graphql", {"endpoint": cfg["graphql_url"],
+                                                "fields": len(gql_eps)})
+            await db.commit()
+            manual = targets.normalize_manual(cfg.get("endpoints") or [])
+            seen = {(e["method"], e["path"]) for e in gql_eps}
+            gql_eps += [e for e in manual if (e["method"], e["path"]) not in seen]
+            return gql_eps, "graphql", cfg["graphql_url"]
     spec_url, spec = await targets.discover_spec(cfg)
     if spec is not None:
         endpoints = targets.summarize_endpoints(spec)
@@ -227,7 +257,17 @@ async def run_exploration(job_id: uuid.UUID) -> None:
         job.phase, job.progress = 3, 70
         emodel = explorer_model(prof.model)
         try:
-            if endpoints:
+            if endpoints and mode == "graphql":
+                # GraphQL field names ARE machine-readable identifiers, so naming is
+                # deterministic — no LLM guessing (which would rewrite every field to
+                # "POST /graphql" and break the endpoint match). key = field name,
+                # kind = Query/Mutation straight from the schema.
+                biz = [e for e in endpoints if not _is_junk_endpoint(e)]
+                ops_list = _graphql_ops_list(biz)
+                await _emit(db, job_id, "name", {"mode": "graphql", "endpoints": len(biz),
+                                                 "named": len(ops_list)})
+                await db.commit()
+            elif endpoints:
                 biz = [e for e in endpoints if not _is_junk_endpoint(e)]
                 CHUNK = 40
                 batches = [biz[i:i + CHUNK] for i in range(0, len(biz), CHUNK)]
@@ -303,16 +343,31 @@ async def run_exploration(job_id: uuid.UUID) -> None:
                 if ep_id in seen_ep:
                     continue          # already registered this endpoint from another batch
                 seen_ep.add(ep_id)
-                kind = _infer_kind(ep["method"], raw_key, op.get("desc", ""),
-                                   ep.get("path", ""), ep.get("summary", ""))
-                binding = {
-                    "source_id": str(source.id), "method": ep["method"], "path": ep["path"],
-                    "params": ep.get("params") or {}, "body_fields": ep.get("body_fields") or [],
-                }
-                input_schema = {"desc": str(op.get("desc", ""))[:200],
-                                "params": ep.get("params") or {},
-                                "body_fields": ep.get("body_fields") or []}
-                executor = "APIExecutor"
+                if ep.get("transport") == "graphql":
+                    # GraphQL field: kind comes straight from the schema (Query vs
+                    # Mutation), binding carries what GraphQLExecutor needs to build
+                    # the document — the field, its arg types, and a scalar selection.
+                    kind = "query" if ep.get("gql_type") == "query" else "mutation"
+                    binding = {
+                        "source_id": str(source.id), "transport": "graphql",
+                        "graphql_url": ep["graphql_url"], "gql_type": ep["gql_type"],
+                        "field": ep["path"], "selection": ep.get("selection", ""),
+                        "arg_types": ep.get("arg_types") or {},
+                    }
+                    input_schema = {"desc": str(op.get("desc", ""))[:200],
+                                    "params": ep.get("params") or {}}
+                    executor = "GraphQLExecutor"
+                else:
+                    kind = _infer_kind(ep["method"], raw_key, op.get("desc", ""),
+                                       ep.get("path", ""), ep.get("summary", ""))
+                    binding = {
+                        "source_id": str(source.id), "method": ep["method"], "path": ep["path"],
+                        "params": ep.get("params") or {}, "body_fields": ep.get("body_fields") or [],
+                    }
+                    input_schema = {"desc": str(op.get("desc", ""))[:200],
+                                    "params": ep.get("params") or {},
+                                    "body_fields": ep.get("body_fields") or []}
+                    executor = "APIExecutor"
             else:
                 kind = op.get("kind") if op.get("kind") in ("query", "mutation") else "query"
                 executor = "FunctionExecutor"
@@ -324,7 +379,9 @@ async def run_exploration(job_id: uuid.UUID) -> None:
                                        input_schema=input_schema, output_schema={},
                                        capability_requirements={}, executor_hint=executor))
             await _emit(db, job_id, "op", {"key": key, "kind": kind, "desc": op.get("desc", ""),
-                                           "binding": {k: binding[k] for k in ("method", "path")} if binding else None})
+                                           "binding": ({"method": binding.get("method") or binding.get("gql_type"),
+                                                        "path": binding.get("path") or binding.get("field")}
+                                                       if binding else None)})
             await _register_operation(db, source, key, kind, job_id,
                                       executor=executor, binding=binding, input_schema=input_schema)
             registered += 1

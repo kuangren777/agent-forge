@@ -341,6 +341,134 @@ class APIExecutor(Executor):
                 "before": before_state}
 
 
+def _gql_coerce(value: Any, gql_type: str) -> Any:
+    """Coerce a flat kwarg to the JSON its GraphQL variable type expects."""
+    base = (gql_type or "").strip("[]!").strip()
+    if base in ("Int", "ID") or base == "Long":
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    if base == "Float":
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
+    if base == "Boolean":
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes")
+        return bool(value)
+    return value
+
+
+class GraphQLExecutor(Executor):
+    """Executes an operation bound to a GraphQL root field (query or mutation).
+
+    Binding (operations.binding_json): {source_id, transport:"graphql",
+    graphql_url, gql_type, field, selection, arg_types}. The document is built at
+    call time from the field + whichever declared args the caller supplied — a
+    scalar selection set gives a flat row. Auth/connection reuse the same
+    DataSource config path as REST (services/targets). GraphQL `errors` are an
+    honest failure, never masked.
+    """
+    name = "GraphQLExecutor"
+
+    async def _resolve(self, db, tenant_id, op_key):
+        from app.models.registry import Operation
+        from app.models.sources import DataSource
+        op = (
+            await db.execute(
+                select(Operation)
+                .where(Operation.tenant_id == tenant_id, Operation.op_key == op_key)
+                .order_by(Operation.version.desc())
+            )
+        ).scalars().first()
+        binding = (op.binding_json or {}) if op else {}
+        if not binding.get("field"):
+            return None, None
+        source = await db.get(DataSource, uuid.UUID(binding["source_id"]))
+        return binding, (source.config_json or {}) if source else None
+
+    @staticmethod
+    def _build_document(binding: dict, kwargs: dict) -> tuple[str, dict]:
+        field = binding["field"]
+        gql_type = binding.get("gql_type", "query")
+        arg_types = binding.get("arg_types") or {}
+        selection = binding.get("selection") or ""
+        used = {k: _gql_coerce(v, arg_types[k])
+                for k, v in kwargs.items()
+                if k in arg_types and v is not None and k != "user_id"}
+        var_decls = ", ".join(f"${k}: {arg_types[k]}" for k in used)
+        arg_uses = ", ".join(f"{k}: ${k}" for k in used)
+        head = gql_type + (f"({var_decls})" if var_decls else "")
+        call = field + (f"({arg_uses})" if arg_uses else "")
+        body = f" {{ {selection} }}" if selection else ""
+        return f"{head} {{ {call}{body} }}", used
+
+    async def _call(self, db, tenant_id, op_key, kwargs) -> tuple[Any, ExecutorResult]:
+        binding, config = await self._resolve(db, tenant_id, op_key)
+        if binding is None or config is None:
+            return None, ExecutorResult(error_code="no_binding")
+        document, variables = self._build_document(binding, dict(kwargs))
+        url = binding.get("graphql_url") or config.get("graphql_url") or "/graphql"
+        try:
+            await targets.ensure_login_token(config)
+            async with targets.client_for(config) as client:
+                resp = await client.post(url, json={"query": document, "variables": variables})
+            if resp.status_code == 401 and (config.get("auth") or {}).get("kind") == "login":
+                await targets.ensure_login_token(config, force=True)
+                async with targets.client_for(config) as client:
+                    resp = await client.post(url, json={"query": document, "variables": variables})
+        except httpx.HTTPError as exc:
+            return None, ExecutorResult(error_code=f"network_error:{type(exc).__name__}")
+        try:
+            payload: Any = resp.json()
+        except ValueError:
+            payload = resp.text[:2000]
+        error_code = None
+        if resp.status_code >= 300:
+            error_code = f"http_{resp.status_code}"
+        elif isinstance(payload, dict) and payload.get("errors"):
+            err = payload["errors"][0]
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            error_code = f"graphql_error:{msg}"[:60]
+        result = ExecutorResult(
+            before_state={},
+            after_state={"graphql_url": url, "field": binding.get("field"),
+                         "response": _truncate(payload)},
+            error_code=error_code,
+        )
+        return payload, result
+
+    @staticmethod
+    def _field_value(payload: Any, field: str) -> Any:
+        if isinstance(payload, dict):
+            data = payload.get("data")
+            if isinstance(data, dict):
+                return data.get(field)
+        return None
+
+    async def read(self, db, tenant_id, op_key, kwargs, meta_out=None):
+        payload, result = await self._call(db, tenant_id, op_key, kwargs)
+        if result.error_code or payload is None:
+            return [{"error": result.error_code}] if result.error_code else []
+        binding, _ = await self._resolve(db, tenant_id, op_key)
+        value = self._field_value(payload, (binding or {}).get("field", ""))
+        if value is None:
+            return []
+        if isinstance(value, (str, int, float, bool)):
+            return [{(binding or {}).get("field", "value"): value}]
+        return _rows(value)
+
+    async def execute(self, db, tenant_id, op_key, kwargs):
+        _, result = await self._call(db, tenant_id, op_key, kwargs)
+        return result
+
+    async def rollback(self, db, before_state, after_state):
+        return {"note": "external GraphQL mutation — manual compensation may be required",
+                "before": before_state}
+
+
 class SQLExecutor(Executor):
     name = "SQLExecutor"
 
@@ -359,7 +487,8 @@ class RPAExecutor(Executor):
 
 
 EXECUTORS: dict[str, Executor] = {
-    e.name: e for e in (FunctionExecutor(), APIExecutor(), SQLExecutor(), RPAExecutor())
+    e.name: e for e in (FunctionExecutor(), APIExecutor(), GraphQLExecutor(),
+                        SQLExecutor(), RPAExecutor())
 }
 
 
