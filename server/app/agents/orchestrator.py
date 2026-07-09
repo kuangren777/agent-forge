@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import ExecutionPlan, PlanStep
 from app.models.execution import ApprovalRequest, ApprovalVote, Execution
+from app.models.policy import PolicyRule
 from app.models.registry import Operation, OperationPermission
 from app.models.audit import DataflowEdge, DataflowNode, Trace
 from app.executors import get_executor
@@ -109,6 +110,15 @@ async def create_plan(
 
     eligible_admins = await _eligible_admin_count(db, tenant_id)
 
+    # Load active database PolicyRules for this tenant (AgentGuard pattern)
+    db_rules = (
+        await db.execute(
+            select(PolicyRule).where(
+                PolicyRule.tenant_id == tenant_id, PolicyRule.status == "active"
+            )
+        )
+    ).scalars().all()
+
     for s in draft["steps"]:
         op = op_by_key.get(s["op_key"] or "")
         step_cap = Capability.of(CAP_FOR_KIND.get(s["kind"], "data"))
@@ -125,10 +135,11 @@ async def create_plan(
                                                   ["customer", "employee", "admin"]),
             permission_scope=op.get("scope") if op else None,
         )
-        decision = evaluate_step(identity, ctx)
+        decision = evaluate_step(identity, ctx, db_rules=list(db_rules))
         if decision.effect == "deny":
             await audit.append_event(db, trace.id, "POLICY_DENIED",
-                                     {"op": s["op_key"], "reason": decision.reason}, cap="trusted")
+                                     {"op": s["op_key"], "reason": decision.reason,
+                                      "rule_source": "db"}, cap="trusted")
             plan.status = "denied"
             await db.flush()
             return plan
