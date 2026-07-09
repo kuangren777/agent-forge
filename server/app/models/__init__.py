@@ -17,6 +17,7 @@ from app.models.registry import (
     PluginRegistration,
 )
 from app.models.llmconfig import LLMProfile
+from app.models.policy import PolicyRule
 from app.models.business import BizRecord
 from app.models.chat import ChatMessage, ChatSession, ExecutionPlan, PlanStep
 from app.models.execution import ApprovalRequest, ApprovalVote, Execution
@@ -38,4 +39,5 @@ __all__ = [
     "ChatSession", "ChatMessage", "ExecutionPlan", "PlanStep",
     "ApprovalRequest", "ApprovalVote", "Execution",
     "Trace", "AuditEvent", "DataflowNode", "DataflowEdge", "LLMRun",
+    "PolicyRule",
 ]

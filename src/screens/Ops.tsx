@@ -4,8 +4,9 @@ import { useMe } from '../features/auth';
 import { useOperations, usePublishOperation, useDisableOperation } from '../features/operations';
 import { useApprovals, useVote } from '../features/approvals';
 import { useLlmProfiles, useLlmModels, usePatchProfile } from '../features/llm';
+import { usePolicies, useCompilePolicy, useCompileAndApply, useTogglePolicy } from '../features/policies';
 import { useEffect, useMemo, useState } from 'react';
-import type { ApprovalRequest } from '../api/types';
+import type { ApprovalRequest, Operation, PolicyRule } from '../api/types';
 import {
   opTitle, kindLabel, confirmLabel, opStatusLabel, permLabel, riskLabel,
   executorLabel, llmRoleLabel, approvalStatusLabel,
@@ -69,6 +70,118 @@ const selStyle: React.CSSProperties = {
   height: 28, border: '1px solid var(--line)', borderRadius: 6, padding: '0 8px',
   font: 'inherit', fontSize: 12, background: 'var(--paper)', minWidth: 200,
 };
+
+function PolicyPanel() {
+  const { toast } = useApp();
+  const { data } = usePolicies();
+  const compile = useCompilePolicy();
+  const apply = useCompileAndApply();
+  const toggle = useTogglePolicy();
+  const [nlText, setNlText] = useState('');
+  const [preview, setPreview] = useState<PolicyRule | null>(null);
+  const rules = data?.items ?? [];
+
+  const handleCompile = () => {
+    if (!nlText.trim()) return;
+    compile.mutate(nlText.trim(), {
+      onSuccess: (r) => {
+        setPreview(r.rule);
+        toast('策略已编译，请在下方预览后确认或取消');
+      },
+      onError: (e) => toast((e as Error).message, 'warn'),
+    });
+  };
+
+  const handleApply = () => {
+    if (!nlText.trim()) return;
+    apply.mutate(nlText.trim(), {
+      onSuccess: (r) => {
+        toast(`策略 ${r.rule.rule_id} 已激活`);
+        setNlText('');
+        setPreview(null);
+      },
+      onError: (e) => toast((e as Error).message, 'warn'),
+    });
+  };
+
+  const handleCancel = () => { setPreview(null); setNlText(''); };
+
+  return (
+    <div className="col gap8" style={{ marginTop: 16 }}>
+      <span className="eyebrow">策略管理 · Policy Rules（{rules.length} 条规则，{data?.active_count ?? 0} 激活）</span>
+
+      {/* NL input */}
+      <div className="col gap6">
+        <span className="xs muted">用自然语言描述你的安全策略——系统会将其编译为 CaMeL 能力标签规则</span>
+        <div className="row gap8">
+          <input
+            value={nlText}
+            onChange={(e) => setNlText(e.target.value)}
+            placeholder="例：退款金额超过 5000 元需要双人审批"
+            style={{ ...selStyle, flex: 1, minWidth: 300 }}
+            onKeyDown={(e) => e.key === 'Enter' && handleCompile()}
+          />
+          <Btn sz="sm" k="go" ic="wand" disabled={compile.isPending || !nlText.trim()}
+            onClick={handleCompile}>
+            {compile.isPending ? '编译中…' : '编译'}
+          </Btn>
+        </div>
+      </div>
+
+      {/* compile preview */}
+      {preview && (
+        <div className="card pad10 col gap6" style={{ borderColor: 'var(--cap-parsed)' }}>
+          <div className="row between vcenter">
+            <span className="b sm mono">{preview.rule_id}</span>
+            <div className="row gap5">
+              <Btn sz="sm" k="go" ic="check" disabled={apply.isPending} onClick={handleApply}>确认激活</Btn>
+              <Btn sz="sm" k="ghost" ic="x" onClick={handleCancel}>取消</Btn>
+            </div>
+          </div>
+          <div className="row gap8 wrap xs">
+            <span>效果：<Tag k={preview.effect === 'deny' ? 'm' : 'q'}>{preview.effect}</Tag></span>
+            {preview.confirm_escalation && <span>升级：<Tag k="write">{preview.confirm_escalation}</Tag></span>}
+            {preview.capability_tags.length > 0 && (
+              <span>能力标签：{preview.capability_tags.map(t => <Chip key={t} ic="shield">{t}</Chip>)}</span>
+            )}
+          </div>
+          <span className="xs muted">{preview.reason}</span>
+        </div>
+      )}
+
+      {/* active rules list */}
+      {rules.length > 0 && (
+        <div className="col gap6">
+          {rules.map((r) => (
+            <div key={r.id} className="card pad8 row vcenter gap10">
+              <div className="col fill gap2">
+                <div className="row vcenter gap6">
+                  <span className="b sm mono">{r.rule_id}</span>
+                  <span className={`dot ${r.status === 'active' ? 'dot-ok' : 'dot-off'}`} />
+                  <Tag k={r.effect === 'deny' ? 'm' : 'q'}>{r.effect}</Tag>
+                  {r.confirm_escalation && <Tag k="write">{r.confirm_escalation}</Tag>}
+                  {r.source === 'compiled' && <Chip ic="wand">NL编译</Chip>}
+                </div>
+                <span className="xs muted">{r.reason || r.description || '-'}</span>
+                {r.capability_tags.length > 0 && (
+                  <div className="row gap4 xs" style={{ marginTop: 2 }}>
+                    {r.capability_tags.map(t => <span key={t} className="mono" style={{ color: 'var(--cap-parsed)' }}>[{t}]</span>)}
+                  </div>
+                )}
+              </div>
+              <Btn sz="sm" k={r.status === 'active' ? 'warn' : 'go'} ic={r.status === 'active' ? 'pause' : 'play'}
+                disabled={toggle.isPending}
+                onClick={() => toggle.mutate({ id: r.id, status: r.status === 'active' ? 'disabled' : 'active' },
+                  { onSuccess: () => toast(`${r.rule_id} ${r.status === 'active' ? '已禁用' : '已激活'}`) })}>
+                {r.status === 'active' ? '禁用' : '启用'}
+              </Btn>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ApprovalRow({ ar }: { ar: ApprovalRequest }) {
   const { toast } = useApp();
@@ -283,10 +396,11 @@ export function OpsMain() {
         <div className="col gap8" style={{ marginTop: 4 }}>
           <span className="eyebrow">可扩展的后端能力</span>
           <div className="row gap8 wrap">
-            <Chip ic="puzzle">策略引擎 · 可按需接入</Chip>
+            <Chip ic="puzzle">策略引擎 · 支持自然语言编写规则</Chip>
             <Chip ic="bolt">执行方式 · 接口 / 数据库 / 流程</Chip>
           </div>
           <ApprovalsPanel />
+          <PolicyPanel />
           <LlmSettingsPanel />
         </div>
       )}
@@ -298,12 +412,20 @@ export function OpsAside() {
   const { opsSel, toast } = useApp();
   const role = useMe().data?.acting_role ?? 'admin';
   const { data } = useOperations();
+  const { data: policyData } = usePolicies();
   const publish = usePublishOperation();
   const disable = useDisableOperation();
 
   const o = data?.items.find((x) => x.id === opsSel) ?? data?.items[0];
   if (!o) return <div className="pad14 muted sm">选择左侧任一操作查看详情。</div>;
   const isM = o.kind === 'mutation';
+
+  // Find policy rules matching this operation
+  const matchedRules = (policyData?.items ?? []).filter(
+    (r) => r.status === 'active' && r.op_keys.some(
+      (pattern) => pattern === '*' || pattern === o.op_key || (pattern.endsWith('*') && o.op_key.startsWith(pattern.slice(0, -1)))
+    )
+  );
 
   return (
     <div className="col pad14 fill gap10 scroll">
@@ -335,10 +457,29 @@ export function OpsAside() {
       )}
       <div className="divln" />
       <div className="row between vcenter">
-        <span className="eyebrow">安全策略</span>
+        <span className="eyebrow">关联的安全策略（{matchedRules.length}）</span>
         <Chip ic="puzzle">策略引擎</Chip>
       </div>
-      <Note>执行前自动校验：当数据来源不可信时，系统会拒绝执行，保障操作安全。</Note>
+      {matchedRules.length === 0 ? (
+        <Note>执行前自动校验：当数据来源不可信时系统会拒绝执行。当前无匹配的自定义规则（仅内置规则生效）。</Note>
+      ) : (
+        matchedRules.map((r) => (
+          <div key={r.id} className="code xs col gap3">
+            <div className="row gap4 wrap">
+              <span className="f">{r.rule_id}</span>
+              <Tag k={r.effect === 'deny' ? 'm' : 'q'}>{r.effect}</Tag>
+              {r.confirm_escalation && <Tag k="write">{r.confirm_escalation}</Tag>}
+            </div>
+            <span className="muted">{r.reason}</span>
+            {r.capability_tags.length > 0 && (
+              <span className="k">cap_tags: [{r.capability_tags.join(', ')}]</span>
+            )}
+            {r.conditions.length > 0 && (
+              <span className="k">conds: [{r.conditions.map(c => `${c.field} ${c.op} ${c.value}`).join('; ')}]</span>
+            )}
+          </div>
+        ))
+      )}
       {role === 'admin' ? (
         o.status === 'pending' ? (
           <div className="row gap8" style={{ marginTop: 2 }}>

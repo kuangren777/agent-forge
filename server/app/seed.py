@@ -23,7 +23,7 @@ from app.models import (
     DataSource, DataflowEdge, DataflowNode, DiscoveredChain, DiscoveredEntity,
     DiscoveredOperation, DiscoveredRule, Execution, ExecutionPlan, ExplorationEvent,
     ExplorationJob, LLMProfile, LLMRun, Operation, OperationPermission, Plugin,
-    PluginRegistration, PlanStep, Role, Session, Tenant, Trace, User, UserRole,
+    PluginRegistration, PlanStep, PolicyRule, Role, Session, Tenant, Trace, User, UserRole,
 )
 from app.config import settings
 from app.services import audit
@@ -142,6 +142,66 @@ async def run() -> None:
                     operation_id=op.id, subject_type="role", subject_id=role_key,
                     effect="allow", condition_json={"scope": scope} if scope else {},
                 ))
+
+        # ---- seed policy rules (NL-compiled demo) ----
+        now = datetime.now(timezone.utc)
+        SEED_POLICIES = [
+            {
+                "rule_id": "refund_high_value_dual",
+                "description": "高额退款操作需要双人审批",
+                "effect": "allow",
+                "confirm_escalation": "dual",
+                "op_keys": ["refund.*"],
+                "capability_tags": ["parsed"],
+                "risk_levels": ["high"],
+                "roles": [],
+                "op_kinds": ["mutation"],
+                "conditions": [],
+                "condition_expr": None,
+                "priority": 85,
+                "reason": "退款金额超过阈值时强制双人审批，防止欺诈",
+                "source": "compiled",
+                "source_text": "退款金额超过 5000 元需要双人审批",
+            },
+            {
+                "rule_id": "block_customer_writes",
+                "description": "客户角色禁止执行任何写操作",
+                "effect": "deny",
+                "confirm_escalation": None,
+                "op_keys": ["*"],
+                "capability_tags": [],
+                "risk_levels": [],
+                "roles": ["customer"],
+                "op_kinds": ["mutation"],
+                "conditions": [],
+                "condition_expr": None,
+                "priority": 95,
+                "reason": "客户无权执行任何写操作",
+                "source": "compiled",
+                "source_text": "禁止客户执行任何写操作",
+            },
+        ]
+        for p in SEED_POLICIES:
+            db.add(PolicyRule(
+                tenant_id=tid,
+                rule_id=p["rule_id"],
+                description=p["description"],
+                effect=p["effect"],
+                confirm_escalation=p["confirm_escalation"],
+                op_keys=p["op_keys"],
+                capability_tags=p["capability_tags"],
+                risk_levels=p["risk_levels"],
+                roles=p["roles"],
+                op_kinds=p["op_kinds"],
+                conditions=p["conditions"],
+                condition_expr=p["condition_expr"],
+                priority=p["priority"],
+                reason=p["reason"],
+                source=p["source"],
+                source_text=p["source_text"],
+                status="active",
+                created_at=now,
+            ))
 
         # ---- LLM profiles (per-tenant model config; switchable at runtime) ----
         db.add(LLMProfile(tenant_id=tid, role="pllm", model=settings.pllm_model,

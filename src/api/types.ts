@@ -97,3 +97,36 @@ export interface LlmProfile {
   timeout_s: number;
 }
 export interface LlmProfiles { base_url: string; items: LlmProfile[] }
+
+export interface PolicyRuleCondition {
+  field: string;
+  op: string;
+  value: unknown;
+}
+
+export interface PolicyRule {
+  id: string;
+  rule_id: string;
+  description: string | null;
+  effect: 'allow' | 'deny';
+  confirm_escalation: 'auto' | 'confirm' | 'dual' | null;
+  op_keys: string[];
+  capability_tags: string[];
+  risk_levels: string[];
+  roles: string[];
+  op_kinds: string[];
+  conditions: PolicyRuleCondition[];
+  condition_expr: string | null;
+  trace_clause: Record<string, unknown> | null;
+  priority: number;
+  reason: string;
+  source: 'manual' | 'compiled';
+  source_text: string | null;
+  status: 'active' | 'disabled';
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface PolicyList { items: PolicyRule[]; active_count: number; total: number }
+
+export interface PolicyCompileResult { status: 'preview' | 'applied'; rule: PolicyRule }
