@@ -22,6 +22,7 @@ from app.db import get_db
 from app.deps import Principal, get_principal
 from app.models.policy import PolicyRule
 from app.services.policy_compiler import compile_policy
+from app.services.llm import LLMError
 
 router = APIRouter(tags=["policies"])
 
@@ -136,8 +137,8 @@ async def compile_policy_preview(
     _require_admin(p)
     try:
         draft = await compile_policy(db, p.tenant_id, nl_text=body.nl_text)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (ValueError, LLMError) as exc:
+        raise HTTPException(status_code=422, detail=f"规则编译失败：{exc}") from exc
     return {"status": "preview", "rule": draft}
 
 
@@ -151,8 +152,8 @@ async def compile_and_apply(
     _require_admin(p)
     try:
         draft = await compile_policy(db, p.tenant_id, nl_text=body.nl_text)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (ValueError, LLMError) as exc:
+        raise HTTPException(status_code=422, detail=f"规则编译失败：{exc}") from exc
 
     # check uniqueness
     existing = (

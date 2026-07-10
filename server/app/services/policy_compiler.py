@@ -112,9 +112,11 @@ async def compile_policy(
 
     # 1. LLM structured extraction
     user_prompt = f"POLICY DESCRIPTION:\n{nl_text}\n\nAvailable operations (keys):\n{await _op_catalogue(db, tenant_id)}"
+    # never cap output — a max_tokens limit truncates longer rules (e.g. dual-
+    # approval escalations) into invalid JSON, which surfaced as a 500.
     draft, _result = await llm.structured(
         prof.model, COMPILE_SYSTEM, user_prompt,
-        temperature=prof.temperature, max_tokens=prof.max_tokens,
+        temperature=prof.temperature,
     )
     return _validate_and_normalise(db, tenant_id, draft, nl_text)
 
