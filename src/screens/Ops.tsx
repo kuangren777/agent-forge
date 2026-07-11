@@ -5,6 +5,7 @@ import { useOperations, usePublishOperation, useDisableOperation } from '../feat
 import { useApprovals, useVote } from '../features/approvals';
 import { useLlmProfiles, useLlmModels, usePatchProfile } from '../features/llm';
 import { usePolicies, useCompilePolicy, useCompileAndApply, useTogglePolicy } from '../features/policies';
+import { useAuditReviews, useReviewStats, useSubmitReview } from '../features/audit_reviews';
 import { useEffect, useMemo, useState } from 'react';
 import type { ApprovalRequest, Operation, PolicyRule } from '../api/types';
 import {
@@ -110,6 +111,21 @@ function PolicyPanel() {
     <div className="col gap8" style={{ marginTop: 16 }}>
       <span className="eyebrow">策略管理 · Policy Rules（{rules.length} 条规则，{data?.active_count ?? 0} 激活）</span>
 
+      {/* three-layer defense quick reference */}
+      <div className="card pad8 col gap4" style={{ borderColor: 'var(--cap-data)', background: 'var(--paper)' }}>
+        <span className="b xs">🛡️ 三层防御体系（高安全 · 低误杀）</span>
+        <div className="row gap8 wrap xs muted">
+          <span><b>L1 控制流</b>：不可信数据影响的分支操作 → 人工确认</span>
+          <span><b>L2 边界</b>：parsed 数据禁止直接写入（需经 Q-LLM）</span>
+          <span><b>L3 审计</b>：大暴露量 Q-LLM 解析自动记录（不阻断）</span>
+        </div>
+        <div className="row gap5">
+          <Btn sz="xs" k="ghost" ic="shield" onClick={() => setNlText('当不可信数据影响了后续操作的控制流时，升级为人工确认')}>L1 模板</Btn>
+          <Btn sz="xs" k="ghost" ic="shield" onClick={() => setNlText('禁止不可信数据绕过 Q-LLM 直接流向写操作')}>L2 模板</Btn>
+          <Btn sz="xs" k="ghost" ic="shield" onClick={() => setNlText('退款金额超过 5000 元需要双人审批')}>双人审批</Btn>
+        </div>
+      </div>
+
       {/* NL input */}
       <div className="col gap6">
         <span className="xs muted">用自然语言描述你的安全策略——系统会将其编译为 CaMeL 能力标签规则</span>
@@ -175,6 +191,92 @@ function PolicyPanel() {
                   { onSuccess: () => toast(`${r.rule_id} ${r.status === 'active' ? '已禁用' : '已激活'}`) })}>
                 {r.status === 'active' ? '禁用' : '启用'}
               </Btn>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AuditReviewPanel() {
+  const { toast } = useApp();
+  const { data: stats } = useReviewStats();
+  const { data } = useAuditReviews('pending');
+  const submit = useSubmitReview();
+  const items = data?.items ?? [];
+
+  const handleReview = (id: string, decision: string, comment?: string) => {
+    submit.mutate({ id, decision, comment }, {
+      onSuccess: (r) => {
+        const label = decision === 'false_positive' ? '已覆盖（误报）' : '已确认（正确拦截）';
+        toast(`${label}${r.refinement_hint ? ' · 建议已生成' : ''}`);
+      },
+      onError: (e) => toast((e as Error).message, 'warn'),
+    });
+  };
+
+  return (
+    <div className="col gap8" style={{ marginTop: 16 }}>
+      <div className="row between vcenter">
+        <span className="eyebrow">
+          审计复核 · Human Review（{stats?.pending ?? 0} 待处理 / {stats?.total ?? 0} 总计）
+        </span>
+        {stats && stats.needs_attention.length > 0 && (
+          <Chip ic="warn">{stats.needs_attention.length} 条规则需调整</Chip>
+        )}
+      </div>
+
+      {stats && (
+        <div className="row gap10 xs muted">
+          <span>✅ 确认 {stats.confirmed}</span>
+          <span>↩️ 覆盖 {stats.overridden}</span>
+          <span>⏳ 待审 {stats.pending}</span>
+        </div>
+      )}
+
+      {/* needs-attention rules */}
+      {stats?.needs_attention && stats.needs_attention.length > 0 && (
+        <div className="card pad8 col gap4" style={{ borderColor: 'var(--cap-write)' }}>
+          <span className="b xs" style={{ color: 'var(--danger)' }}>⚠️ 以下规则被多次覆盖，建议调整以降低误杀：</span>
+          {stats.needs_attention.map((na) => (
+            <span key={na.rule_id} className="xs mono">
+              {na.rule_id} — 被覆盖 {na.override_count} 次
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* pending reviews */}
+      {items.length === 0 ? (
+        <span className="xs muted">暂无待复核的拦截事件。</span>
+      ) : (
+        <div className="col gap6">
+          {items.slice(0, 10).map((r) => (
+            <div key={r.id} className="card pad8 row vcenter gap10">
+              <div className="col fill gap2">
+                <div className="row vcenter gap6">
+                  <span className="b sm mono">{r.event_type}</span>
+                  <Tag k="write">{r.op_key ?? '-'}</Tag>
+                  {r.matched_rule_id && <Chip ic="puzzle">{r.matched_rule_id}</Chip>}
+                </div>
+                <span className="xs muted">
+                  {String((r.context_json as Record<string, unknown>)?.reason ?? '-')}
+                </span>
+                {r.refinement_hint && (
+                  <span className="xs" style={{ color: 'var(--cap-data)' }}>💡 {r.refinement_hint}</span>
+                )}
+              </div>
+              <div className="row gap5">
+                <Btn sz="xs" k="go" ic="check" disabled={submit.isPending}
+                  onClick={() => handleReview(r.id, 'legitimate_block', '确认拦截正确')}>
+                  确认
+                </Btn>
+                <Btn sz="xs" k="warn" ic="undo" disabled={submit.isPending}
+                  onClick={() => handleReview(r.id, 'false_positive', '误报，建议调整规则')}>
+                  覆盖
+                </Btn>
+              </div>
             </div>
           ))}
         </div>
@@ -401,6 +503,7 @@ export function OpsMain() {
           </div>
           <ApprovalsPanel />
           <PolicyPanel />
+          <AuditReviewPanel />
           <LlmSettingsPanel />
         </div>
       )}

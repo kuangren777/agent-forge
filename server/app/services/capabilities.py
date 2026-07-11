@@ -12,6 +12,12 @@ Trust ordering (lower rank = more trusted):
 
 `write` is an *action* label (applied to a sink/result node), not a data
 provenance level, so it is tracked separately.
+
+`control_dep` is a *side-channel* label: a value produced inside a control-flow
+branch that was influenced by untrusted data. It does NOT affect the trust rank
+directly — instead it signals "this value's existence or content may reveal
+information about untrusted data through a side channel." Policies targeting
+control_dep escalate confirmation without denying the operation.
 """
 from __future__ import annotations
 
@@ -21,7 +27,10 @@ TRUSTED = "trusted"
 DATA = "data"
 PARSED = "parsed"
 WRITE = "write"
+CONTROL_DEP = "control_dep"
 
+# Data-flow trust rank (lower = more trusted). control_dep is NOT in this rank
+# because it's a side-channel marker, not a data provenance level.
 _RANK = {TRUSTED: 0, DATA: 1, PARSED: 2}
 
 
@@ -62,6 +71,15 @@ class Capability:
         """Q-LLM transform: output inherits inputs and is marked parsed."""
         return Capability(self.labels | {PARSED})
 
+    def derive_control_dep(self) -> "Capability":
+        """Mark a value as produced under control-flow influenced by untrusted data.
+
+        This does NOT change the trust rank — it adds a side-channel marker
+        that downstream policies can use to escalate confirmation without
+        outright denial (no false positives from strict taint propagation).
+        """
+        return Capability(self.labels | {CONTROL_DEP})
+
     def as_list(self) -> list[str]:
         return sorted(self.labels)
 
@@ -90,12 +108,17 @@ def required_confirm(op_kind: str, op_confirm: str, arg_caps: Capability, risk: 
     * queries never require human confirm.
     * a mutation whose arguments derive from `parsed` (Q-LLM) data is escalated
       to at least `confirm`.
+    * a mutation whose arguments carry `control_dep` (side-channel marker) is
+      escalated to at least `confirm` — this blocks timing/control-flow leaks
+      without the false positives of full STRICT-taint propagation.
     * `dual` is forced for high-risk mutations.
     """
     if op_kind != "mutation":
         return "auto"
     level = op_confirm
     if PARSED in arg_caps.labels:
+        level = stricter_confirm(level, "confirm")
+    if CONTROL_DEP in arg_caps.labels:
         level = stricter_confirm(level, "confirm")
     if risk in ("high", "critical"):
         level = stricter_confirm(level, "dual")

@@ -28,6 +28,7 @@ from app.models.audit import (
     LLMRun,
     Trace,
 )
+from app.models.audit_review import AuditReview
 
 __all__ = [
     "Base",
@@ -39,5 +40,6 @@ __all__ = [
     "ChatSession", "ChatMessage", "ExecutionPlan", "PlanStep",
     "ApprovalRequest", "ApprovalVote", "Execution",
     "Trace", "AuditEvent", "DataflowNode", "DataflowEdge", "LLMRun",
+    "AuditReview",
     "PolicyRule",
 ]
