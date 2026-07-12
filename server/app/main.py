@@ -75,6 +75,7 @@ def _include_routers() -> None:
         ("approvals", "router"), ("chat", "router"), ("traces", "router"),
         ("executions", "router"), ("plugins", "router"), ("llm_profiles", "router"),
         ("policies", "router"),
+        ("audit_reviews", "router"),
     ]:
         try:
             mod = __import__(f"app.api.{modname}", fromlist=[attr])

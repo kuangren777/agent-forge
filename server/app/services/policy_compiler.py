@@ -25,7 +25,7 @@ from app.services.llm import llm
 from app.services.llm_config import resolve as resolve_profile
 
 # ── validators for CaMeL-specific fields ─────────────────────────────
-_VALID_CAPS = {"trusted", "data", "parsed", "write"}
+_VALID_CAPS = {"trusted", "data", "parsed", "write", "control_dep"}
 _VALID_CONFIRM = {"auto", "confirm", "dual"}
 _VALID_RISK = {"low", "high", "critical"}
 _VALID_KINDS = {"query", "mutation"}
@@ -39,11 +39,14 @@ policy engine can enforce.
 
 --- CaMeL CAPABILITY MODEL (you MUST use these labels) ---
 Every value carries ONE OR MORE capability tags:
-- "trusted"  — user input, system constants. MOST restrictive source.
-- "data"     — output of a database query or trusted API call.
-- "parsed"   — output of the quarantined Q-LLM (untrusted data → typed selection).
-               Any write whose arguments include "parsed" data MUST escalate.
-- "write"    — applied to the result of a mutation operation.
+- "trusted"     — user input, system constants. MOST restrictive source.
+- "data"        — output of a database query or trusted API call.
+- "parsed"      — output of the quarantined Q-LLM (untrusted data → typed selection).
+                  Any write whose arguments include "parsed" data MUST escalate.
+- "write"       — applied to the result of a mutation operation.
+- "control_dep" — side-channel marker: a value produced in the same execution
+                  context as untrusted data. Does NOT deny — only escalates to
+                  "confirm". Use for timing/control-flow leak defense.
 
 --- CONFIRM ESCALATION ---
 - "auto"    — execute without human intervention (queries only).
@@ -66,8 +69,13 @@ Every value carries ONE OR MORE capability tags:
     {"field": "tool.amount", "op": "gte", "value": 5000}
   ],
   "condition_expr": "tool.amount >= 5000 AND principal.role == 'customer'",
-  "trace_clause": null,  // or {"from_cap":"data","to_cap":"write","via_op":null}
-  "priority": 50,        // 90=deny, 70=require_approval, 50=default, 10=allow
+  "trace_clause": null,
+  // For dataflow boundary rules:
+  //   {"from_cap":"parsed","to_cap":"write","via_op":null}
+  //   → "parsed data must NOT flow directly to a write sink"
+  //   {"from_cap":"parsed","to_cap":"write","via_op":"qparser"}
+  //   → "parsed data may reach a write sink ONLY through qparser mediation"
+  "priority": 50,        // 90=deny, 85=dual, 70=confirm, 50=default, 10=allow
   "reason": "Human-readable reason shown in audit log"
 }
 
@@ -82,11 +90,27 @@ payload.kind           — "query"|"mutation" (the step kind)
 --- RULES ---
 1. Use "parsed" in capability_tags when restricting Q-LLM-derived data.
 2. Use "write" in capability_tags when restricting mutation operations.
-3. For "deny" effect, set priority=90. For "confirm" escalation, priority=70.
-4. For "dual" escalation, set priority=85.
-5. op_keys support "*" wildcard (e.g. "refund.*" matches all refund ops).
-6. If the policy is about DATA FLOW (X must not flow to Y), use trace_clause.
-7. Reply with ONLY the JSON object, no commentary."""
+3. Use "control_dep" when the rule targets side-channel leaks (data produced
+   in the same execution context as untrusted data). This escalates to
+   "confirm" WITHOUT denying — no false positives.
+4. For "deny" effect, set priority=90. For "confirm" escalation, priority=70.
+5. For "dual" escalation, set priority=85.
+6. op_keys support "*" wildcard (e.g. "refund.*" matches all refund ops).
+7. If the policy is about DATA FLOW boundaries (X must not flow to Y), use
+   trace_clause with from_cap, to_cap, and optional via_op.
+8. Reply with ONLY the JSON object, no commentary.
+
+--- THREE-LAYER DEFENSE PATTERNS ---
+Layer 1 (control_dep): "If any untrusted data influenced the control flow of a
+  subsequent operation, require human confirmation."
+  → capability_tags: ["control_dep"], effect: "allow", confirm_escalation: "confirm"
+Layer 2 (trace_clause): "Untrusted data must not flow directly into a write
+  operation without passing through Q-LLM mediation."
+  → trace_clause: {"from_cap":"parsed","to_cap":"write","via_op":null},
+    effect: "deny", priority: 95
+Layer 3 (info_exposure): Not a rule — this is automatic audit logging.
+  When Q-LLM parses many rows but selects few, an INFO_EXPOSURE event is
+  emitted to the audit chain."""
 
 
 async def compile_policy(

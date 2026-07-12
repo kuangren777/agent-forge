@@ -23,10 +23,10 @@ def test_auth_token_prefix():
 
 def test_auth_basic_username_and_combined():
     h = targets.build_auth_headers({"auth": {"kind": "basic", "username": "u", "secret": "p"}})
-    assert h["Authorization"] == "Basic " + base64.b64encode(b"u:p").decode()
+    assert h["Authorization"] == "Basic " + base64.b64encode(b"testuser:testpw").decode()
     # WordPress-style "user:app-password" stored whole in the secret
-    h2 = targets.build_auth_headers({"auth": {"kind": "basic", "secret": "u:p w x"}})
-    assert h2["Authorization"] == "Basic " + base64.b64encode(b"u:p w x").decode()
+    h2 = targets.build_auth_headers({"auth": {"kind": "basic", "secret": "wpuser:apppw x y"}})
+    assert h2["Authorization"] == "Basic " + base64.b64encode(b"wpuser:apppw x y").decode()
 
 
 def test_auth_header_kind_and_extra_headers():
@@ -388,11 +388,11 @@ async def test_login_auth_acquires_and_caches_session_token(monkeypatch):
         async def __aexit__(self, *a): return False
         async def request(self, method, url, **kw):
             calls["login"] += 1
-            assert url == "/api/auth" and kw.get("json") == {"password": "sekret"}
+            assert url == "/api/auth" and kw.get("json") == {"password": "test-password-123"}
             return FakeResp({"session": {"valid": True, "sid": "SID-123", "csrf": "x"}})
 
     monkeypatch.setattr(targets.httpx, "AsyncClient", lambda **kw: FakeClient())
-    monkeypatch.setenv("TGT_PH", "sekret")
+    monkeypatch.setenv("TGT_PH", "test-password-123")
     targets._login_cache.clear()
     cfg = {"base_url": "http://x", "auth": {
         "kind": "login", "login_url": "/api/auth", "login_body": {"password": "$secret"},
@@ -421,11 +421,11 @@ async def test_login_auth_extracts_token_from_cookie(monkeypatch):
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
         async def request(self, method, url, **kw):
-            assert kw.get("data") == {"token": "adminpw"}   # form-encoded, not json
+            assert kw.get("data") == {"token": "test-admin-pw"}   # form-encoded, not json
             return FakeResp()
 
     monkeypatch.setattr(targets.httpx, "AsyncClient", lambda **kw: FakeClient())
-    monkeypatch.setenv("TGT_VW", "adminpw")
+    monkeypatch.setenv("TGT_VW", "test-admin-pw")
     targets._login_cache.clear()
     cfg = {"base_url": "http://x", "auth": {
         "kind": "login", "login_url": "/admin", "login_method": "POST",

@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.chat import ExecutionPlan, PlanStep
 from app.models.execution import ApprovalRequest, ApprovalVote, Execution
 from app.models.policy import PolicyRule
+from app.models.audit_review import AuditReview
 from app.models.registry import Operation, OperationPermission
 from app.models.audit import DataflowEdge, DataflowNode, Trace
 from app.executors import get_executor
@@ -28,6 +29,14 @@ from app.services import audit, planner, qparser
 from app.services.capabilities import Capability
 
 CAP_FOR_KIND = {"query": "data", "parse": "parsed", "write": "write"}
+
+
+def _extract_rule_id(reason: str) -> str | None:
+    """Extract a PolicyRule.rule_id from a decision reason string.
+    Heuristic: look for single-quoted snake_case identifiers like 'block_refunds'."""
+    import re
+    m = re.search(r"'([a-z][a-z0-9_]*)'", reason)
+    return m.group(1) if m else None
 
 
 async def _available_operations(db: AsyncSession, tenant_id: uuid.UUID, role: str,
@@ -135,9 +144,24 @@ async def create_plan(
         )
     ).scalars().all()
 
+    # track whether any prior step injected parsed data (side-channel context)
+    _parsed_seen = False
+
     for s in draft["steps"]:
         op = op_by_key.get(s["op_key"] or "")
         step_cap = Capability.of(CAP_FOR_KIND.get(s["kind"], "data"))
+
+        # ── control_dep propagation (Layer 1: side-channel defense) ──
+        # If any previous step produced `parsed` data, subsequent steps in the
+        # same plan operate in a context influenced by untrusted data. We mark
+        # their output with `control_dep` so policies can escalate confirmation
+        # without the false positives of STRICT-taint (which would deny
+        # legitimate operations that merely share an execution context).
+        if _parsed_seen and s["kind"] != "query":
+            step_cap = step_cap.derive_control_dep()
+        if "parsed" in step_cap.labels or s["kind"] == "parse":
+            _parsed_seen = True
+
         running_cap = running_cap.merge(step_cap)
 
         # run policy for EVERY step so identity constraints (e.g. customer
@@ -156,6 +180,27 @@ async def create_plan(
             await audit.append_event(db, trace.id, "POLICY_DENIED",
                                      {"op": s["op_key"], "reason": decision.reason,
                                       "rule_source": "db"}, cap="trusted")
+
+            # ── human audit review (feedback loop) ──
+            # Create an AuditReview record so admins can later confirm this
+            # was a legitimate block or override it as a false positive.
+            # Overrides feed back into policy refinement suggestions.
+            db.add(AuditReview(
+                tenant_id=tenant_id,
+                trace_id=trace.id,
+                event_type="POLICY_DENIED",
+                op_key=s["op_key"],
+                matched_rule_id=_extract_rule_id(decision.reason),
+                status="pending",
+                context_json={
+                    "instruction": instruction[:200],
+                    "op_key": s["op_key"],
+                    "capability_tags": list(running_cap.labels),
+                    "risk": op["risk"] if op else "unknown",
+                    "reason": decision.reason,
+                },
+            ))
+
             plan.status = "denied"
             await db.flush()
             return plan
@@ -404,6 +449,34 @@ async def _execute_plan(db: AsyncSession, plan: ExecutionPlan, trace: Trace, ste
             st.status = "done"
             await audit.append_event(db, plan.trace_id, "QLLM_PARSED",
                                      {"selected": len(selected), "capability": "parsed"}, cap="parsed")
+
+            # ── info exposure audit (Layer 3: side-channel leak detection) ──
+            # Count how many rows of untrusted data were exposed to the LLM
+            # during parsing. Large exposure counts relative to output size
+            # indicate potential information leakage (e.g. an attacker
+            # extracting data through the model's attention mechanism).
+            # This does NOT block the operation — it records the exposure for
+            # post-hoc audit, avoiding the false positives of STRICT-taint.
+            exposed_rows = len(rows)
+            select_ratio = (len(selected) / max(exposed_rows, 1)) * 100
+            risk = (
+                "high" if exposed_rows > 100 and select_ratio < 5
+                else "medium" if exposed_rows > 20 and select_ratio < 20
+                else "low"
+            )
+            await audit.append_event(db, plan.trace_id, "INFO_EXPOSURE",
+                                     {
+                                         "step": st.label,
+                                         "exposed_rows": exposed_rows,
+                                         "selected_rows": len(selected),
+                                         "select_ratio_pct": round(select_ratio, 1),
+                                         "exposure_risk": risk,
+                                         "note": (
+                                             "High exposure risk: many rows parsed, few selected. "
+                                             "May indicate side-channel data leakage through Q-LLM."
+                                         ) if risk == "high" else None,
+                                     },
+                                     cap="parsed")
 
         elif st.kind == "write" and st.op_key:
             idem = f"{plan.id}:{st.step_no}"
