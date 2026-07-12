@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
-from app.services.capabilities import Capability, required_confirm, stricter_confirm, PARSED
+from app.services.capabilities import Capability, required_confirm, stricter_confirm, PARSED, CONTROL_DEP
 
 if TYPE_CHECKING:
     from app.models.policy import PolicyRule
@@ -76,6 +76,17 @@ def _customer_scope(identity: Identity, ctx: StepCtx) -> Decision | None:
 
 
 # ---- database rule matching (AgentGuard pattern adapted to CaMeL) ----------
+def _step_output_cap(ctx: StepCtx) -> str:
+    """Map a step's kind to its output capability label.
+
+    query → data, parse → parsed, write → write. Used by trace_clause matching.
+    """
+    return {
+        "query": "data",
+        "mutation": "write",
+    }.get(ctx.op_kind, "data")
+
+
 def _wildcard_match(value: str | None, patterns: list[str]) -> bool:
     """Check if value matches any pattern. '*' matches everything.
     'refund.*' matches 'refund.expedite'."""
@@ -211,6 +222,30 @@ def _match_db_rule(
         actual = _resolve_field(cond.get("field", ""), identity, ctx)
         op = cond.get("op", "eq")
         if not _apply_cond_op(op, actual, cond.get("value")):
+            return None
+
+    # 7. trace_clause (Layer 2: cross-step dataflow boundary)
+    # If the rule defines a forbidden dataflow path, check whether this step
+    # creates it.  from_cap ∈ arg_caps AND to_cap matches step's output kind
+    # AND via_op (if set) is NOT the current operation (i.e. data is flowing
+    # directly without mediation).
+    if rule.trace_clause and isinstance(rule.trace_clause, dict):
+        tc = rule.trace_clause
+        from_cap = tc.get("from_cap")
+        to_cap = tc.get("to_cap")
+        via_op = tc.get("via_op")
+
+        if from_cap and from_cap not in ctx.arg_caps.labels:
+            return None
+
+        if to_cap:
+            step_out = _step_output_cap(ctx)
+            if to_cap != step_out:
+                return None
+
+        if via_op and ctx.op_key == via_op:
+            # The rule says "via_op must be present to allow this flow"
+            # If the current step IS via_op, the flow is mediated → don't match
             return None
 
     # All checks passed → produce a Decision

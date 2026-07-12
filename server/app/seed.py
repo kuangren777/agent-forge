@@ -9,6 +9,7 @@ fully-formed trace so Flow/Audit have genuine data).
 from __future__ import annotations
 
 import asyncio
+import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -120,7 +121,8 @@ async def run() -> None:
             u = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
             if u is None:
                 u = User(tenant_id=tid, email=email, display_name=name,
-                         password_hash=hash_password("demo1234"))
+                         password_hash=hash_password(
+                             os.environ.get("DEMO_PASSWORD") or secrets.token_urlsafe(12)))
                 db.add(u)
                 await db.flush()
             db.add(UserRole(user_id=u.id, role_id=roles[role_key].id))
@@ -146,6 +148,49 @@ async def run() -> None:
         # ---- seed policy rules (NL-compiled demo) ----
         now = datetime.now(timezone.utc)
         SEED_POLICIES = [
+            # ── Layer 1: side-channel control-flow defense ──
+            {
+                "rule_id": "control_dep_escalate",
+                "description": "不可信数据影响控制流后的写操作需人工确认",
+                "effect": "allow",
+                "confirm_escalation": "confirm",
+                "op_keys": ["*"],
+                "capability_tags": ["control_dep"],
+                "risk_levels": [],
+                "roles": [],
+                "op_kinds": ["mutation"],
+                "conditions": [],
+                "condition_expr": None,
+                "trace_clause": None,
+                "priority": 75,
+                "reason": "该操作在含有不可信数据的执行上下文中运行，存在侧信道泄露风险，需人工确认",
+                "source": "compiled",
+                "source_text": "当不可信数据影响了后续操作的控制流时，升级为人工确认",
+            },
+            # ── Layer 2: cross-step dataflow boundary ──
+            {
+                "rule_id": "parsed_direct_write_deny",
+                "description": "禁止不可信数据绕过 Q-LLM 直接流入写操作",
+                "effect": "deny",
+                "confirm_escalation": None,
+                "op_keys": ["*"],
+                "capability_tags": [],
+                "risk_levels": [],
+                "roles": [],
+                "op_kinds": ["mutation"],
+                "conditions": [],
+                "condition_expr": None,
+                "trace_clause": {
+                    "from_cap": "parsed",
+                    "to_cap": "write",
+                    "via_op": None,
+                },
+                "priority": 95,
+                "reason": "不可信数据必须经过 Q-LLM 解析后才能写入，禁止直接数据流",
+                "source": "compiled",
+                "source_text": "禁止不可信数据绕过 Q-LLM 直接流向写操作",
+            },
+            # ── existing: high-value refund dual approval ──
             {
                 "rule_id": "refund_high_value_dual",
                 "description": "高额退款操作需要双人审批",
@@ -158,11 +203,13 @@ async def run() -> None:
                 "op_kinds": ["mutation"],
                 "conditions": [],
                 "condition_expr": None,
+                "trace_clause": None,
                 "priority": 85,
                 "reason": "退款金额超过阈值时强制双人审批，防止欺诈",
                 "source": "compiled",
                 "source_text": "退款金额超过 5000 元需要双人审批",
             },
+            # ── existing: block customer writes ──
             {
                 "rule_id": "block_customer_writes",
                 "description": "客户角色禁止执行任何写操作",
@@ -175,6 +222,7 @@ async def run() -> None:
                 "op_kinds": ["mutation"],
                 "conditions": [],
                 "condition_expr": None,
+                "trace_clause": None,
                 "priority": 95,
                 "reason": "客户无权执行任何写操作",
                 "source": "compiled",
