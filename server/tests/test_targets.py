@@ -22,7 +22,7 @@ def test_auth_token_prefix():
 
 
 def test_auth_basic_username_and_combined():
-    h = targets.build_auth_headers({"auth": {"kind": "basic", "username": "u", "secret": "p"}})
+    h = targets.build_auth_headers({"auth": {"kind": "basic", "username": "testuser", "secret": "testpw"}})
     assert h["Authorization"] == "Basic " + base64.b64encode(b"testuser:testpw").decode()
     # WordPress-style "user:app-password" stored whole in the secret
     h2 = targets.build_auth_headers({"auth": {"kind": "basic", "secret": "wpuser:apppw x y"}})
